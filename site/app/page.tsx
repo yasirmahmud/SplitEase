@@ -18,14 +18,15 @@ const demoPeople: Person[] = [
   { id: 'jonah', name: 'Jonah', color: colors[1] },
   { id: 'sam', name: 'Sam', color: colors[2] },
 ];
+const allDemoPersonIds = demoPeople.map((person) => person.id);
 const demoItems: ReceiptItem[] = [
   { id: 'axe', name: 'AXE Fine Fragrance Body Spray, 2.9 oz', quantity: 1, price: 4.98, assignedTo: [], excluded: true },
-  { id: 'nivea-soft', name: 'NIVEA Soft Moisturizing Cream, 6.8 oz', quantity: 1, price: 8.92, assignedTo: ['maya'] },
-  { id: 'nivea-travel', name: 'NIVEA Face & Hand Cream, Travel Size', quantity: 1, price: 1.47, assignedTo: ['maya'] },
-  { id: 'equate', name: 'Equate Hemorrhoidal Ointment, 2 oz', quantity: 1, price: 5.42, assignedTo: ['sam'] },
-  { id: 'chapstick', name: 'ChapStick Moisturizer Original, SPF 15', quantity: 1, price: 1.43, assignedTo: ['maya', 'jonah', 'sam'] },
-  { id: 'straps', name: 'RDX Weight Lifting Straps', quantity: 1, price: 10.99, assignedTo: ['jonah'] },
-  { id: 'belt', name: 'RDX Auto Lock Weight Lifting Belt', quantity: 1, price: 13.99, assignedTo: ['jonah', 'sam'] },
+  { id: 'nivea-soft', name: 'NIVEA Soft Moisturizing Cream, 6.8 oz', quantity: 1, price: 8.92, assignedTo: allDemoPersonIds },
+  { id: 'nivea-travel', name: 'NIVEA Face & Hand Cream, Travel Size', quantity: 1, price: 1.47, assignedTo: allDemoPersonIds },
+  { id: 'equate', name: 'Equate Hemorrhoidal Ointment, 2 oz', quantity: 1, price: 5.42, assignedTo: allDemoPersonIds },
+  { id: 'chapstick', name: 'ChapStick Moisturizer Original, SPF 15', quantity: 1, price: 1.43, assignedTo: allDemoPersonIds },
+  { id: 'straps', name: 'RDX Weight Lifting Straps', quantity: 1, price: 10.99, assignedTo: allDemoPersonIds },
+  { id: 'belt', name: 'RDX Auto Lock Weight Lifting Belt', quantity: 1, price: 13.99, assignedTo: allDemoPersonIds },
 ];
 const demoAdjustments: Adjustments = { savings: 1.98, tax: 2.49, tip: 0, delivery: 0 };
 
@@ -115,7 +116,8 @@ export default function Home() {
       }
       const parsed = parseReceiptText(text);
       if (!parsed.items.length) throw new Error('No item lines were found');
-      setItems(parsed.items);
+      const everyone = people.map((person) => person.id);
+      setItems(parsed.items.map((item) => ({ ...item, assignedTo: item.excluded ? [] : everyone })));
       setAdjustments(parsed.adjustments);
       setReceiptName(`${parsed.merchant}${parsed.date ? ` · ${parsed.date}` : ''}`);
       setStatus(`${parsed.items.length} items found — review before splitting`);
@@ -144,6 +146,7 @@ export default function Home() {
     markUnsaved();
     const id = `${slugId(name, people.length)}-${Date.now()}`;
     setPeople((current) => [...current, { id, name, color: colors[current.length % colors.length] }]);
+    setItems((current) => current.map((item) => item.excluded ? item : { ...item, assignedTo: [...new Set([...item.assignedTo, id])] }));
     setPersonName('');
   }
 
