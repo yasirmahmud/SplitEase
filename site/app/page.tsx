@@ -1,11 +1,12 @@
 'use client';
 
 import { useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, CircleDollarSign, FileText, LockKeyhole, Plus, ReceiptText, RotateCcw, Sparkles, Trash2, Upload, Users, WandSparkles } from 'lucide-react';
+import { Check, ChevronDown, CircleDollarSign, FileText, Link2, LockKeyhole, Plus, ReceiptText, RotateCcw, Sparkles, Trash2, Upload, Users, WandSparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { parseReceiptText } from '@/lib/receipt';
+import { decodeSharedSplit, encodeSharedSplit, type SharedSplit } from '@/lib/share-state';
 
 type Person = { id: string; name: string; color: string };
 type ReceiptItem = { id: string; name: string; quantity: number; price: number; assignedTo: string[]; excluded?: boolean };
@@ -54,16 +55,24 @@ async function textFromPdf(file: File) {
   return pages.join('\n');
 }
 
+function sharedSplitFromUrl() {
+  if (typeof window === 'undefined') return null;
+  const value = new URLSearchParams(window.location.hash.slice(1)).get('share');
+  return value ? decodeSharedSplit(value) : null;
+}
+
 export default function Home() {
-  const [people, setPeople] = useState<Person[]>(demoPeople);
-  const [items, setItems] = useState<ReceiptItem[]>(demoItems);
-  const [adjustments, setAdjustments] = useState<Adjustments>(demoAdjustments);
-  const [receiptName, setReceiptName] = useState('Walmart · Aug 25, 2026');
+  const [sharedInitial] = useState(sharedSplitFromUrl);
+  const [people, setPeople] = useState<Person[]>(sharedInitial?.people ?? demoPeople);
+  const [items, setItems] = useState<ReceiptItem[]>(sharedInitial?.items ?? demoItems);
+  const [adjustments, setAdjustments] = useState<Adjustments>(sharedInitial?.adjustments ?? demoAdjustments);
+  const [receiptName, setReceiptName] = useState(sharedInitial?.receiptName ?? 'Walmart · Aug 25, 2026');
   const [personName, setPersonName] = useState('');
-  const [status, setStatus] = useState('Demo receipt ready');
+  const [status, setStatus] = useState(sharedInitial ? 'Shared split loaded' : 'Demo receipt ready');
   const [busy, setBusy] = useState(false);
   const [showAdjustments, setShowAdjustments] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [shareStatus, setShareStatus] = useState(sharedInitial ? 'You’re viewing a saved shared version.' : '');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const chargedItems = useMemo(() => items.filter((item) => !item.excluded), [items]);
@@ -82,6 +91,10 @@ export default function Home() {
     const factor = subtotal ? grandTotal / subtotal : 0;
     return people.map((person) => ({ ...person, total: (allocated.get(person.id) || 0) * factor }));
   }, [people, chargedItems, subtotal, grandTotal]);
+
+  function markUnsaved() {
+    if (window.location.hash.startsWith('#share=')) setShareStatus('Changes made — save again to update the shared version.');
+  }
 
   async function handleFile(file?: File) {
     if (!file) return;
@@ -106,6 +119,8 @@ export default function Home() {
       setAdjustments(parsed.adjustments);
       setReceiptName(`${parsed.merchant}${parsed.date ? ` · ${parsed.date}` : ''}`);
       setStatus(`${parsed.items.length} items found — review before splitting`);
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+      setShareStatus('');
     } catch (error) {
       console.error(error);
       setStatus('Could not find items. Try a clearer image or use the demo.');
@@ -116,6 +131,7 @@ export default function Home() {
   }
 
   function toggleAssignment(itemId: string, personId: string) {
+    markUnsaved();
     setItems((current) => current.map((item) => item.id !== itemId ? item : {
       ...item,
       assignedTo: item.assignedTo.includes(personId) ? item.assignedTo.filter((id) => id !== personId) : [...item.assignedTo, personId],
@@ -125,12 +141,14 @@ export default function Home() {
   function addPerson() {
     const name = personName.trim();
     if (!name) return;
+    markUnsaved();
     const id = `${slugId(name, people.length)}-${Date.now()}`;
     setPeople((current) => [...current, { id, name, color: colors[current.length % colors.length] }]);
     setPersonName('');
   }
 
   function removePerson(id: string) {
+    markUnsaved();
     setPeople((current) => current.filter((person) => person.id !== id));
     setItems((current) => current.map((item) => ({ ...item, assignedTo: item.assignedTo.filter((personId) => personId !== id) })));
   }
@@ -138,12 +156,26 @@ export default function Home() {
   function resetDemo() {
     setPeople(demoPeople); setItems(demoItems); setAdjustments(demoAdjustments);
     setReceiptName('Walmart · Aug 25, 2026'); setStatus('Demo receipt ready');
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    setShareStatus('');
   }
 
   async function copySummary() {
     const lines = [`SplitEase — ${receiptName}`, `Total: ${money(grandTotal)}`, '', ...totals.map((person) => `${person.name}: ${money(person.total)}`)];
     await navigator.clipboard.writeText(lines.join('\n'));
     setCopied(true); setTimeout(() => setCopied(false), 1800);
+  }
+
+  async function saveAndShare() {
+    const state: SharedSplit = { version: 1, receiptName, people, items, adjustments };
+    const url = `${window.location.origin}${window.location.pathname}#share=${encodeSharedSplit(state)}`;
+    window.history.replaceState(null, '', url);
+    try {
+      await navigator.clipboard.writeText(url);
+      setShareStatus('Saved — share link copied!');
+    } catch {
+      setShareStatus('Saved — copy this page’s URL to share it.');
+    }
   }
 
   return (
@@ -166,8 +198,11 @@ export default function Home() {
             <input ref={fileRef} className="sr-only" type="file" accept="application/pdf,image/*" onChange={(event) => handleFile(event.target.files?.[0])} />
             <Button className="h-11 rounded-xl px-4 font-bold" onClick={() => fileRef.current?.click()} disabled={busy}><Upload /> {busy ? 'Processing…' : 'Upload receipt'}</Button>
             <Button variant="outline" className="h-11 rounded-xl border-[#183b43]/15 bg-white/70 px-4 font-bold" onClick={resetDemo}><RotateCcw /> Use demo</Button>
+            <Button className="h-11 rounded-xl bg-[#dff3a8] px-4 font-extrabold text-[#183b43] hover:bg-[#cfee87]" onClick={saveAndShare}><Link2 /> Save & share</Button>
           </div>
         </div>
+
+        {shareStatus && <output className="mb-5 flex items-center gap-2 rounded-xl border border-[#183b43]/10 bg-white/70 px-4 py-3 text-sm font-bold text-[#49666d]"><Check className="text-[#32a379]" size={17} /> {shareStatus}</output>}
 
         <div className="grid gap-5 xl:grid-cols-[1fr_310px]">
           <section className="overflow-hidden rounded-[24px] border border-[#183b43]/10 bg-white shadow-[0_18px_60px_rgba(27,52,58,.08)]">
@@ -194,7 +229,7 @@ export default function Home() {
             </table></div>
 
             <button className="flex w-full items-center justify-between border-t border-[#183b43]/10 bg-[#fffdfa] px-5 py-4 text-sm font-extrabold" onClick={() => setShowAdjustments((open) => !open)} aria-expanded={showAdjustments}><span className="flex items-center gap-2"><CircleDollarSign size={17} /> Tax, savings & extras</span><ChevronDown size={17} className={cn('transition', showAdjustments && 'rotate-180')} /></button>
-            {showAdjustments && <div className="grid gap-3 border-t border-[#183b43]/10 bg-[#f8faf6] p-5 sm:grid-cols-4">{(['savings', 'tax', 'delivery', 'tip'] as const).map((key) => <label key={key} className="text-xs font-extrabold capitalize text-[#597177]">{key}<div className="relative mt-1"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span><Input className="h-10 bg-white pl-7" min="0" step="0.01" type="number" value={adjustments[key]} onChange={(event) => setAdjustments((current) => ({ ...current, [key]: Number(event.target.value) }))} /></div></label>)}</div>}
+            {showAdjustments && <div className="grid gap-3 border-t border-[#183b43]/10 bg-[#f8faf6] p-5 sm:grid-cols-4">{(['savings', 'tax', 'delivery', 'tip'] as const).map((key) => <label key={key} className="text-xs font-extrabold capitalize text-[#597177]">{key}<div className="relative mt-1"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span><Input className="h-10 bg-white pl-7" min="0" step="0.01" type="number" value={adjustments[key]} onChange={(event) => { markUnsaved(); setAdjustments((current) => ({ ...current, [key]: Number(event.target.value) })); }} /></div></label>)}</div>}
           </section>
 
           <aside className="h-fit overflow-hidden rounded-[24px] bg-primary text-primary-foreground shadow-[0_18px_60px_rgba(23,57,65,.2)] xl:sticky xl:top-5">

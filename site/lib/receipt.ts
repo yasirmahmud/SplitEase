@@ -32,18 +32,21 @@ export function parseReceiptText(raw: string) {
     if (!inItems && !hasPrice) continue;
     if (hasPrice) inItems = true;
     if (!hasPrice) {
-      buffer = [line];
+      buffer.push(line);
       continue;
     }
     const beforeQty = line.split(/\bQty\b/i)[0]
       .replace(/(?:Unavailable|\d+ shopped|Return complete|You(?:'|’)re all set!.*)$/i, '')
       .trim();
-    const joined = beforeQty.length > 4 ? line : [...buffer, line].join(' ');
+    const meaningfulBeforeQty = beforeQty.replace(/^(?:\d+\s*)?(?:shopped|substituted|unavailable|return complete)$/i, '').trim();
+    const joined = meaningfulBeforeQty.length > 4 ? line : [...buffer, line].join(' ');
     const match = joined.match(/^(.*?)\s+Qty\s+(\d+)\s+\$(\d+[.,]\d{2})(?:\s|$)/i);
     if (!match) continue;
     const name = cleanItemName(match[1]);
     if (name.length > 2) {
-      items.push({ id: slugId(name, items.length), name, quantity: Number(match[2]), price: Number(match[3].replace(',', '.')), assignedTo: [], excluded: /Unavailable/i.test(joined) });
+      const quantity = Number(match[2]);
+      const lineTotal = Number(match[3].replace(',', '.'));
+      items.push({ id: slugId(name, items.length), name, quantity, price: lineTotal / quantity, assignedTo: [], excluded: /Unavailable/i.test(joined) });
     }
     buffer = [];
   }
