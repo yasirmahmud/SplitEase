@@ -93,11 +93,13 @@ export default function Home() {
         .single();
       if (cancelled) return;
       if (error) {
+        setIsDirty(true);
         setShareStatus('Shared state is temporarily unavailable. Your changes are still local.');
         return;
       }
       setCurrentVersion(data.version);
       if (!isSharedSplit(data.data)) {
+        setIsDirty(true);
         setShareStatus('No shared version yet — configure the split and save it for everyone.');
         return;
       }
