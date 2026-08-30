@@ -1,0 +1,61 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-heading: var(--font-sans);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) * .65);
+  --radius-md: calc(var(--radius) * .82);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.35);
+}
+
+:root {
+  --background: #f7f3e9;
+  --foreground: #183941;
+  --card: #fffdfa;
+  --card-foreground: #183941;
+  --primary: #173941;
+  --primary-foreground: #fffdf6;
+  --secondary: #e8efed;
+  --secondary-foreground: #183941;
+  --muted: #e9eeea;
+  --muted-foreground: #61777c;
+  --accent: #dff3a8;
+  --accent-foreground: #23462c;
+  --destructive: #cc4c40;
+  --border: #d6dfdc;
+  --input: #cedad7;
+  --ring: #4b828b;
+  --radius: .75rem;
+  --font-sans: 'Avenir Next', Avenir, 'Segoe UI', sans-serif;
+}
+
+* { box-sizing: border-box; border-color: var(--border); }
+html { scroll-behavior: smooth; font-family: var(--font-sans); }
+body { margin: 0; min-width: 320px; background: var(--background); color: var(--foreground); }
+button, input { font: inherit; }
+button { cursor: pointer; }
+::selection { background: #dff3a8; color: #183941; }
+
+@media (prefers-reduced-motion: no-preference) {
+  tbody tr { animation: settle .28s ease both; }
+  @keyframes settle { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+}

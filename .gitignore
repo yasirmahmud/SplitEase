@@ -1,0 +1,6 @@
+# The example receipt contains personal order details and stays local.
+example_wallmart_receipt/
+
+# Local build output.
+site/dist/
+site/node_modules/

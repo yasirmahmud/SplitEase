@@ -1,0 +1,64 @@
+export type ParsedReceiptItem = {
+  id: string;
+  name: string;
+  quantity: number;
+  price: number;
+  assignedTo: string[];
+  excluded?: boolean;
+};
+
+function slugId(value: string, index: number) {
+  return `${value.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 25)}-${index}`;
+}
+
+function cleanItemName(value: string) {
+  return value
+    .replace(/^(?:Invoice|Seller|Buyer|Order#.*|.*(?:Road|Rd|Street|St|Avenue|Ave|Gainesville).*)\s+/i, '')
+    .replace(/\s+(?:Unavailable|\d+ shopped|Return complete|You(?:'|’)re all set!.*)$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function parseReceiptText(raw: string) {
+  const text = raw.replace(/\uFFFD/g, '').replace(/\r/g, '\n');
+  const lines = text.split(/\n+/).map((line) => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const items: ParsedReceiptItem[] = [];
+  let buffer: string[] = [];
+  let inItems = false;
+
+  for (const line of lines) {
+    if (/^Subtotal\b/i.test(line)) break;
+    const hasPrice = /\bQty\s+\d+\s+\$\d+[.,]\d{2}\b/i.test(line);
+    if (!inItems && !hasPrice) continue;
+    if (hasPrice) inItems = true;
+    if (!hasPrice) {
+      buffer = [line];
+      continue;
+    }
+    const beforeQty = line.split(/\bQty\b/i)[0]
+      .replace(/(?:Unavailable|\d+ shopped|Return complete|You(?:'|’)re all set!.*)$/i, '')
+      .trim();
+    const joined = beforeQty.length > 4 ? line : [...buffer, line].join(' ');
+    const match = joined.match(/^(.*?)\s+Qty\s+(\d+)\s+\$(\d+[.,]\d{2})(?:\s|$)/i);
+    if (!match) continue;
+    const name = cleanItemName(match[1]);
+    if (name.length > 2) {
+      items.push({ id: slugId(name, items.length), name, quantity: Number(match[2]), price: Number(match[3].replace(',', '.')), assignedTo: [], excluded: /Unavailable/i.test(joined) });
+    }
+    buffer = [];
+  }
+
+  const value = (pattern: RegExp) => Number(text.match(pattern)?.[1]?.replace(',', '.') || 0);
+  const deliveryMatch = text.match(/(?:delivery|shipping)[^\n$]*\$(\d+[.,]\d{2})(?:\s+\$?(\d+[.,]?\d{0,2}))?/i);
+  return {
+    items,
+    adjustments: {
+      savings: value(/Savings\s+-?\$(\d+[.,]\d{2})/i),
+      tax: value(/Tax\s+\$(\d+[.,]\d{2})/i),
+      tip: value(/(?:Driver\s+)?tip\s+\$(\d+[.,]\d{2})/i),
+      delivery: Number((deliveryMatch?.[2] || deliveryMatch?.[1] || '0').replace(',', '.')),
+    },
+    merchant: /Walmart/i.test(text) ? 'Walmart' : 'Imported receipt',
+    date: text.match(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s+\d{4}/i)?.[0],
+  };
+}
