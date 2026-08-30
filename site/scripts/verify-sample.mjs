@@ -25,6 +25,9 @@ const total = chargedSubtotal - parsed.adjustments.savings + parsed.adjustments.
 if (parsed.items.length !== 10) throw new Error(`Expected 10 items, found ${parsed.items.length}: ${parsed.items.map((item) => item.name).join(' | ')}`);
 if (Math.abs(chargedSubtotal - 92.14) > 0.001) throw new Error(`Expected $92.14 subtotal, found $${chargedSubtotal.toFixed(2)}`);
 if (Math.abs(total - 87.55) > 0.001) throw new Error(`Expected $87.55 total, found $${total.toFixed(2)}`);
+const hapiName = 'Hapi Snacks Wasabi Peas, Hot, Shelf-Stable, Gluten-Free, 9.9 oz';
+if (!parsed.items.some((item) => item.name === hapiName)) throw new Error(`Expected full Hapi item name, found: ${parsed.items.map((item) => item.name).join(' | ')}`);
+if (parsed.items.some((item) => /^(?:\d+\s*)?(?:shopped|substituted)$/i.test(item.name))) throw new Error('A shopping status was parsed as an item name');
 
 const shared = {
   version: 1,

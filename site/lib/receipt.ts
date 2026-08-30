@@ -13,8 +13,7 @@ function slugId(value: string, index: number) {
 
 function cleanItemName(value: string) {
   return value
-    .replace(/^(?:Invoice|Seller|Buyer|Order#.*|.*(?:Road|Rd|Street|St|Avenue|Ave|Gainesville).*)\s+/i, '')
-    .replace(/\s+(?:Unavailable|\d+ shopped|Return complete|You(?:'|’)re all set!.*)$/i, '')
+    .replace(/\s+(?:(?:\d+\s+)?(?:shopped|substituted)|Unavailable|Return complete|You(?:'|’)re all set!.*)$/i, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -43,7 +42,8 @@ export function parseReceiptText(raw: string) {
     const match = joined.match(/^(.*?)\s+Qty\s+(\d+)\s+\$(\d+[.,]\d{2})(?:\s|$)/i);
     if (!match) continue;
     const name = cleanItemName(match[1]);
-    if (name.length > 2) {
+    const isStatusOnly = /^(?:\d+\s*)?(?:shopped|substituted|unavailable|return complete)$/i.test(name);
+    if (name.length > 2 && !isStatusOnly) {
       const quantity = Number(match[2]);
       const lineTotal = Number(match[3].replace(',', '.'));
       items.push({ id: slugId(name, items.length), name, quantity, price: lineTotal / quantity, assignedTo: [], excluded: /Unavailable/i.test(joined) });
