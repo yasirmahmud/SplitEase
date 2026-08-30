@@ -6,6 +6,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   base: './',
+  envPrefix: ['VITE_', 'NEXT_PUBLIC_'],
   css: { postcss: { plugins: [tailwindcss()] } },
   plugins: [react(), sites()],
   resolve: { alias: { '@': fileURLToPath(new URL('.', import.meta.url)) } },

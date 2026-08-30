@@ -1,12 +1,13 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, CircleDollarSign, FileText, Link2, LockKeyhole, Plus, ReceiptText, RotateCcw, Sparkles, Trash2, Upload, Users, WandSparkles } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, CheckCircle2, ChevronDown, CircleDollarSign, FileText, LockKeyhole, Plus, ReceiptText, RotateCcw, Save, Sparkles, Trash2, Upload, Users, WandSparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { parseReceiptText } from '@/lib/receipt';
-import { decodeSharedSplit, encodeSharedSplit, type SharedSplit } from '@/lib/share-state';
+import { decodeSharedSplit, isSharedSplit, type SharedSplit } from '@/lib/share-state';
+import { supabase } from '@/lib/supabase';
 
 type Person = { id: string; name: string; color: string };
 type ReceiptItem = { id: string; name: string; quantity: number; price: number; assignedTo: string[]; excluded?: boolean };
@@ -73,8 +74,53 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [showAdjustments, setShowAdjustments] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [shareStatus, setShareStatus] = useState(sharedInitial ? 'You’re viewing a saved shared version.' : '');
+  const [shareStatus, setShareStatus] = useState('Loading the shared version…');
+  const [currentVersion, setCurrentVersion] = useState(1);
+  const [acknowledgements, setAcknowledgements] = useState<Set<string>>(new Set());
+  const [ackBusy, setAckBusy] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [hasPublishedState, setHasPublishedState] = useState(false);
+  const [isDirty, setIsDirty] = useState(Boolean(sharedInitial));
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSharedState() {
+      const { data, error } = await supabase
+        .from('splitease_state')
+        .select('version,data,updated_at')
+        .eq('id', 'current')
+        .single();
+      if (cancelled) return;
+      if (error) {
+        setShareStatus('Shared state is temporarily unavailable. Your changes are still local.');
+        return;
+      }
+      setCurrentVersion(data.version);
+      if (!isSharedSplit(data.data)) {
+        setShareStatus('No shared version yet — configure the split and save it for everyone.');
+        return;
+      }
+      setPeople(data.data.people);
+      setItems(data.data.items);
+      setAdjustments(data.data.adjustments);
+      setReceiptName(data.data.receiptName);
+      setStatus(`Shared version ${data.version} loaded`);
+      setHasPublishedState(true);
+      setIsDirty(false);
+      const { data: checked } = await supabase
+        .from('splitease_acknowledgements')
+        .select('person_id')
+        .eq('state_id', 'current')
+        .eq('version', data.version);
+      if (!cancelled) {
+        setAcknowledgements(new Set((checked || []).map((row) => row.person_id)));
+        setShareStatus(`Shared version ${data.version} is shown to everyone.`);
+      }
+    }
+    void loadSharedState();
+    return () => { cancelled = true; };
+  }, []);
 
   const chargedItems = useMemo(() => items.filter((item) => !item.excluded), [items]);
   const subtotal = useMemo(() => chargedItems.reduce((sum, item) => sum + item.price * item.quantity, 0), [chargedItems]);
@@ -94,7 +140,8 @@ export default function Home() {
   }, [people, chargedItems, subtotal, grandTotal]);
 
   function markUnsaved() {
-    if (window.location.hash.startsWith('#share=')) setShareStatus('Changes made — save again to update the shared version.');
+    setIsDirty(true);
+    setShareStatus('Changes are local — save to update the version shown to everyone.');
   }
 
   async function handleFile(file?: File) {
@@ -122,7 +169,8 @@ export default function Home() {
       setReceiptName(`${parsed.merchant}${parsed.date ? ` · ${parsed.date}` : ''}`);
       setStatus(`${parsed.items.length} items found — review before splitting`);
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
-      setShareStatus('');
+      setIsDirty(true);
+      setShareStatus('New receipt ready — save to show it to everyone.');
     } catch (error) {
       console.error(error);
       setStatus('Could not find items. Try a clearer image or use the demo.');
@@ -160,7 +208,8 @@ export default function Home() {
     setPeople(demoPeople); setItems(demoItems); setAdjustments(demoAdjustments);
     setReceiptName('Walmart · Aug 25, 2026'); setStatus('Demo receipt ready');
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
-    setShareStatus('');
+    setIsDirty(true);
+    setShareStatus('Demo restored locally — save to show it to everyone.');
   }
 
   async function copySummary() {
@@ -169,16 +218,50 @@ export default function Home() {
     setCopied(true); setTimeout(() => setCopied(false), 1800);
   }
 
-  async function saveAndShare() {
+  async function saveForEveryone() {
+    if (saving) return;
     const state: SharedSplit = { version: 1, receiptName, people, items, adjustments };
-    const url = `${window.location.origin}${window.location.pathname}#share=${encodeSharedSplit(state)}`;
-    window.history.replaceState(null, '', url);
-    try {
-      await navigator.clipboard.writeText(url);
-      setShareStatus('Saved — share link copied!');
-    } catch {
-      setShareStatus('Saved — copy this page’s URL to share it.');
+    const nextVersion = currentVersion + 1;
+    setSaving(true);
+    const { data, error } = await supabase
+      .from('splitease_state')
+      .update({ version: nextVersion, data: state, updated_at: new Date().toISOString() })
+      .eq('id', 'current')
+      .eq('version', currentVersion)
+      .select('version')
+      .single();
+    setSaving(false);
+    if (error || !data) {
+      setShareStatus('Another person may have saved first. Refresh to load the newest version, then try again.');
+      return;
     }
+    setCurrentVersion(data.version);
+    setAcknowledgements(new Set());
+    setHasPublishedState(true);
+    setIsDirty(false);
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    setStatus(`Shared version ${data.version} saved`);
+    setShareStatus(`Version ${data.version} saved — new visitors will see this split.`);
+  }
+
+  async function toggleAcknowledgement(person: Person) {
+    if (!hasPublishedState || isDirty || ackBusy) return;
+    setAckBusy(person.id);
+    const alreadyChecked = acknowledgements.has(person.id);
+    const request = alreadyChecked
+      ? supabase.from('splitease_acknowledgements').delete().eq('state_id', 'current').eq('version', currentVersion).eq('person_id', person.id)
+      : supabase.from('splitease_acknowledgements').upsert({ state_id: 'current', version: currentVersion, person_id: person.id, person_name: person.name }, { onConflict: 'state_id,version,person_id' });
+    const { error } = await request;
+    setAckBusy(null);
+    if (error) {
+      setShareStatus(`Could not update ${person.name}’s acknowledgement. Please try again.`);
+      return;
+    }
+    setAcknowledgements((current) => {
+      const next = new Set(current);
+      if (alreadyChecked) next.delete(person.id); else next.add(person.id);
+      return next;
+    });
   }
 
   return (
@@ -186,7 +269,7 @@ export default function Home() {
       <header className="border-b border-[#183b43]/10 bg-[#f7f3e9]/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1440px] items-center justify-between px-5 py-4 lg:px-8">
           <a className="flex items-center gap-2.5" href="#top" aria-label="SplitEase home"><span className="grid size-10 place-items-center rounded-[14px] bg-primary text-primary-foreground shadow-[0_6px_18px_rgba(23,57,65,.18)]"><ReceiptText size={21} /></span><span className="text-xl font-black tracking-[-0.04em]">SplitEase</span></a>
-          <div className="flex items-center gap-2 text-xs font-bold text-[#527078]"><LockKeyhole size={14} /> Your receipt stays on this device</div>
+          <div className="flex items-center gap-2 text-xs font-bold text-[#527078]"><LockKeyhole size={14} /> Original receipt file stays on this device</div>
         </div>
       </header>
 
@@ -201,7 +284,7 @@ export default function Home() {
             <input ref={fileRef} className="sr-only" type="file" accept="application/pdf,image/*" onChange={(event) => handleFile(event.target.files?.[0])} />
             <Button className="h-11 rounded-xl px-4 font-bold" onClick={() => fileRef.current?.click()} disabled={busy}><Upload /> {busy ? 'Processing…' : 'Upload receipt'}</Button>
             <Button variant="outline" className="h-11 rounded-xl border-[#183b43]/15 bg-white/70 px-4 font-bold" onClick={resetDemo}><RotateCcw /> Use demo</Button>
-            <Button className="h-11 rounded-xl bg-[#dff3a8] px-4 font-extrabold text-[#183b43] hover:bg-[#cfee87]" onClick={saveAndShare}><Link2 /> Save & share</Button>
+            <Button className="h-11 rounded-xl bg-[#dff3a8] px-4 font-extrabold text-[#183b43] hover:bg-[#cfee87]" onClick={saveForEveryone} disabled={saving || !isDirty}><Save /> {saving ? 'Saving…' : isDirty ? 'Save for everyone' : 'Saved for everyone'}</Button>
           </div>
         </div>
 
@@ -239,14 +322,15 @@ export default function Home() {
             <div className="p-5">
               <div className="mb-5 flex items-start justify-between"><div><p className="text-xs font-extrabold uppercase tracking-[.13em] text-[#a9c2c6]">Everyone owes</p><h2 className="mt-1 text-3xl font-black tracking-[-.04em]">{money(grandTotal)}</h2></div><span className="grid size-10 place-items-center rounded-xl bg-white/10"><ReceiptText size={19} /></span></div>
               <div className="mb-5 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-[#dff3a8] transition-all" style={{ width: `${subtotal ? Math.min(100, assignedSubtotal / subtotal * 100) : 0}%` }} /></div>
-              <div className="space-y-2.5">{totals.map((person) => <div key={person.id} className="flex items-center justify-between rounded-xl bg-white/[.07] px-3 py-3"><div className="flex items-center gap-2.5"><span className="size-2.5 rounded-full" style={{ background: person.color }} /><span className="font-bold">{person.name}</span></div><span className="text-lg font-black tabular-nums">{money(person.total)}</span></div>)}</div>
+              <div className="space-y-2.5">{totals.map((person) => { const checked = acknowledgements.has(person.id); const canAcknowledge = hasPublishedState && !isDirty; return <div key={person.id} className="flex items-center justify-between rounded-xl bg-white/[.07] px-3 py-3"><div className="flex items-center gap-2.5"><span className="size-2.5 rounded-full" style={{ background: person.color }} /><span className="font-bold">{person.name}</span></div><div className="flex items-center gap-2"><span className="text-lg font-black tabular-nums">{money(person.total)}</span><button type="button" aria-label={`${person.name} ${checked ? 'has reviewed this split; remove acknowledgement' : 'acknowledges reviewing this split'}`} aria-pressed={checked} disabled={!canAcknowledge || ackBusy === person.id} onClick={() => toggleAcknowledgement(person)} className={cn('grid size-8 place-items-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-40', checked ? 'border-[#dff3a8] bg-[#dff3a8] text-[#183b43]' : 'border-white/20 bg-white/5 text-[#91acb1] hover:border-white/40 hover:text-white')} title={canAcknowledge ? (checked ? 'Reviewed — click to undo' : 'Click when you have reviewed') : 'Save this version before acknowledging'}><CheckCircle2 size={17} /></button></div></div>; })}</div>
+              {hasPublishedState && !isDirty && <p className="mt-3 text-center text-[10px] font-bold uppercase tracking-[.1em] text-[#91acb1]">{acknowledgements.size} of {people.length} reviewed</p>}
               {unassignedCount > 0 && <div className="mt-4 rounded-xl border border-[#f8d585]/25 bg-[#f8d585]/10 px-3 py-2.5 text-xs font-bold text-[#fbe2a5]">{unassignedCount} charged {unassignedCount === 1 ? 'item is' : 'items are'} still unassigned.</div>}
             </div>
             <div className="border-t border-white/10 bg-black/10 p-5"><div className="mb-4 space-y-2 text-xs text-[#bfd0d3]"><div className="flex justify-between"><span>Items</span><span>{money(subtotal)}</span></div><div className="flex justify-between"><span>Savings</span><span>−{money(adjustments.savings)}</span></div><div className="flex justify-between"><span>Tax + extras</span><span>{money(adjustments.tax + adjustments.tip + adjustments.delivery)}</span></div></div><Button onClick={copySummary} className="h-11 w-full rounded-xl bg-[#dff3a8] font-extrabold text-[#183b43] hover:bg-[#cfee87]">{copied ? <><Check /> Copied!</> : 'Copy split summary'}</Button><p className="mt-3 text-center text-[10px] leading-4 text-[#91acb1]">Shared items split evenly. Tax, savings, and extras are distributed proportionally.</p></div>
           </aside>
         </div>
       </section>
-      <footer className="mx-auto flex max-w-[1440px] flex-col gap-2 border-t border-[#183b43]/10 px-5 py-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between lg:px-8"><p>SplitEase works entirely in your browser. Nothing is uploaded.</p><p>PDF + image receipts · Built for GitHub Pages</p></footer>
+      <footer className="mx-auto flex max-w-[1440px] flex-col gap-2 border-t border-[#183b43]/10 px-5 py-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between lg:px-8"><p>The original receipt file is never uploaded; saved split details sync through Supabase.</p><p>PDF + image receipts · Built for GitHub Pages</p></footer>
     </main>
   );
 }

@@ -1,6 +1,6 @@
 # SplitEase
 
-SplitEase is a privacy-first receipt splitter for Walmart PDF and image receipts. Receipt parsing, OCR, item assignment, and total calculations run entirely in the browser.
+SplitEase is a receipt splitter for Walmart PDF and image receipts. Receipt parsing and OCR run in the browser; pressing **Save for everyone** publishes the parsed split details to Supabase so every visitor sees the same version and can acknowledge reviewing it. The original receipt file is never uploaded.
 
 ## Local development
 
