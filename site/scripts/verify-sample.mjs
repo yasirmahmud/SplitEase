@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { parseReceiptText } from '../lib/receipt.ts';
+import { parseReceiptText, receiptFingerprint } from '../lib/receipt.ts';
 import { decodeSharedSplit, encodeSharedSplit } from '../lib/share-state.ts';
 
 const source = new URL('../../example_wallmart_receipt/Order details - Walmart.com.pdf', import.meta.url);
@@ -28,6 +28,11 @@ if (Math.abs(total - 87.55) > 0.001) throw new Error(`Expected $87.55 total, fou
 const hapiName = 'Hapi Snacks Wasabi Peas, Hot, Shelf-Stable, Gluten-Free, 9.9 oz';
 if (!parsed.items.some((item) => item.name === hapiName)) throw new Error(`Expected full Hapi item name, found: ${parsed.items.map((item) => item.name).join(' | ')}`);
 if (parsed.items.some((item) => /^(?:\d+\s*)?(?:shopped|substituted)$/i.test(item.name))) throw new Error('A shopping status was parsed as an item name');
+const firstFingerprint = receiptFingerprint(parsed);
+const secondFingerprint = receiptFingerprint(parseReceiptText(pages.join('\n')));
+if (firstFingerprint !== secondFingerprint) throw new Error('The same receipt did not produce the same duplicate-detection fingerprint');
+const changedFingerprint = receiptFingerprint({ ...parsed, adjustments: { ...parsed.adjustments, tax: parsed.adjustments.tax + 0.01 } });
+if (firstFingerprint === changedFingerprint) throw new Error('A changed receipt produced the same duplicate-detection fingerprint');
 
 const shared = {
   version: 1,

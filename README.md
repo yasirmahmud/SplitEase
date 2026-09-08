@@ -1,6 +1,8 @@
 # SplitEase
 
-SplitEase is a receipt splitter for Walmart PDF and image receipts. Receipt parsing and OCR run in the browser; pressing **Save for everyone** publishes the parsed split details to Supabase so every visitor sees the same version and can acknowledge reviewing it. The original receipt file is never uploaded.
+SplitEase is a receipt splitter for PDF and image receipts. Receipt parsing and OCR run in the browser, while parsed split details are automatically saved to Supabase. The app keeps a library of editable split sessions and detects duplicate receipt uploads before creating a new session. The original receipt file is never uploaded.
+
+Supabase's free tier is sufficient for this app's small JSON records and autosave traffic. The included schema uses the existing single shared workspace row, so no schema migration is required when upgrading from the original one-session version.
 
 ## Local development
 

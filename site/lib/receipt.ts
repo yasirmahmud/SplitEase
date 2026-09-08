@@ -65,3 +65,25 @@ export function parseReceiptText(raw: string) {
     date: text.match(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s+\d{4}/i)?.[0],
   };
 }
+
+export function receiptFingerprint(receipt: ReturnType<typeof parseReceiptText>) {
+  const canonical = [
+    receipt.merchant.toLowerCase().replace(/[^a-z0-9]/g, ''),
+    receipt.date?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'no-date',
+    ...receipt.items.map((item) => [
+      item.name.toLowerCase().replace(/[^a-z0-9]/g, ''),
+      item.quantity,
+      Math.round(item.price * 100),
+      item.excluded ? 1 : 0,
+    ].join(':')),
+    ...Object.values(receipt.adjustments).map((value) => Math.round(value * 100)),
+  ].join('|');
+
+  // This only flags likely duplicates; it is not used as a security boundary.
+  let hash = 2166136261;
+  for (let index = 0; index < canonical.length; index += 1) {
+    hash ^= canonical.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `receipt-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
