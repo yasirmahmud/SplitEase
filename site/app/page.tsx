@@ -129,6 +129,7 @@ export default function Home() {
   const lastSavedSnapshotRef = useRef('');
 
   const activeSession = useMemo(() => sessions.find((session) => session.id === activeSessionId) ?? sessions[0], [sessions, activeSessionId]);
+  const displayedSessions = useMemo(() => [...sessions].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()), [sessions]);
   const people = activeSession.people;
   const items = activeSession.items;
   const adjustments = activeSession.adjustments;
@@ -261,10 +262,25 @@ export default function Home() {
       const sessionPeople = people.length ? people : demoPeople;
       const everyone = sessionPeople.map((person) => person.id);
       const receiptName = `${parsed.merchant}${parsed.date ? ` · ${parsed.date}` : ''}`;
+      const receiptItems = parsed.items.map((item) => ({ ...item, assignedTo: item.excluded ? [] : everyone }));
+      if (activeSession.items.length === 0) {
+        updateActive((session) => ({
+          ...session,
+          title: receiptName,
+          receiptName,
+          fingerprint,
+          people: sessionPeople,
+          items: receiptItems,
+          adjustments: parsed.adjustments,
+        }));
+        setStatus(`${parsed.items.length} items found — split updated`);
+        return;
+      }
+
       const session: SplitSession = {
         id: newId(), title: receiptName, receiptName, createdAt: timestamp, updatedAt: timestamp, fingerprint,
         people: sessionPeople,
-        items: parsed.items.map((item) => ({ ...item, assignedTo: item.excluded ? [] : everyone })),
+        items: receiptItems,
         adjustments: parsed.adjustments,
         reviewedBy: [],
       };
@@ -349,7 +365,7 @@ export default function Home() {
             <div className={cn('flex items-center gap-1.5 text-xs font-bold', syncState === 'offline' ? 'text-[#a06426]' : 'text-[#527078]')} aria-live="polite">{syncState === 'saving' || syncState === 'loading' ? <LoaderCircle className="animate-spin" size={14} /> : syncState === 'offline' ? <CloudOff size={14} /> : <Cloud size={14} />}{syncLabel}</div>
           </div>
           <div className="flex snap-x gap-2 overflow-x-auto pb-1">
-            {sessions.map((session) => <button key={session.id} onClick={() => { setActiveSessionId(session.id); setStatus('Saved split opened'); }} className={cn('min-w-[170px] snap-start rounded-xl border px-3 py-2.5 text-left transition sm:min-w-[210px]', session.id === activeSession.id ? 'border-primary bg-primary text-white shadow-md' : 'border-[#183b43]/10 bg-[#fffdfa] hover:border-[#183b43]/25')} aria-current={session.id === activeSession.id ? 'true' : undefined}><span className="block truncate text-sm font-extrabold">{session.title}</span><span className={cn('mt-1 block text-xs font-medium', session.id === activeSession.id ? 'text-white/65' : 'text-muted-foreground')}>{session.items.length} items · {shortDate(session.updatedAt)}</span></button>)}
+            {displayedSessions.map((session) => <button key={session.id} onClick={() => { setActiveSessionId(session.id); setStatus('Saved split opened'); }} className={cn('min-w-[170px] snap-start rounded-xl border px-3 py-2.5 text-left transition sm:min-w-[210px]', session.id === activeSession.id ? 'border-primary bg-primary text-white shadow-md' : 'border-[#183b43]/10 bg-[#fffdfa] hover:border-[#183b43]/25')} aria-current={session.id === activeSession.id ? 'true' : undefined}><span className="block truncate text-sm font-extrabold">{session.title}</span><span className={cn('mt-1 block text-xs font-medium', session.id === activeSession.id ? 'text-white/65' : 'text-muted-foreground')}>{session.items.length} items · {shortDate(session.updatedAt)}</span></button>)}
           </div>
         </section>
 
@@ -368,7 +384,7 @@ export default function Home() {
               </div>
             </div>
 
-            {items.length === 0 ? <div className="grid min-h-56 place-items-center px-6 py-12 text-center"><div><span className="mx-auto grid size-12 place-items-center rounded-2xl bg-[#eaf0ef] text-primary"><Upload size={21} /></span><h3 className="mt-4 font-extrabold">This split is ready for a receipt</h3><p className="mt-1 text-sm text-muted-foreground">Upload a PDF or image to add its items.</p></div></div> : <>
+            {items.length === 0 ? <button type="button" disabled={busy} onClick={() => fileRef.current?.click()} className="group grid min-h-64 w-full place-items-center border-0 bg-white px-6 py-12 text-center transition hover:bg-[#f8faf6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#4b828b] disabled:cursor-wait" aria-label="Upload a receipt to this split"><span><span className="mx-auto grid size-14 place-items-center rounded-2xl bg-[#eaf0ef] text-primary transition group-hover:-translate-y-0.5 group-hover:bg-[#dff3a8]">{busy ? <LoaderCircle className="animate-spin" size={23} /> : <Upload size={23} />}</span><span className="mt-4 block font-extrabold">{busy ? 'Processing receipt…' : 'Upload a receipt'}</span><span className="mt-1 block text-sm text-muted-foreground">Choose a PDF or image to add its items.</span></span></button> : <>
               <div className="hidden overflow-x-auto md:block"><table className="w-full min-w-[720px] border-collapse">
                 <thead><tr className="border-b border-[#183b43]/10 bg-[#f8faf6] text-left text-[11px] font-extrabold uppercase tracking-[.1em] text-[#6a7f84]"><th className="px-5 py-3">Item</th><th className="px-3 py-3 text-center">Qty</th><th className="px-3 py-3 text-right">Price</th><th className="px-5 py-3">Split between</th></tr></thead>
                 <tbody>{items.map((item) => <tr key={item.id} className={cn('border-b border-[#183b43]/8 last:border-0', item.excluded && 'bg-[#fafafa] opacity-55')}><td className="max-w-[390px] px-5 py-4"><div className={cn('text-sm font-bold leading-5', item.excluded && 'line-through')}>{item.name}</div>{item.excluded && <span className="mt-1 inline-block rounded-full bg-[#eceeed] px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide">Not charged</span>}</td><td className="px-3 py-4 text-center text-sm font-semibold text-muted-foreground">{item.quantity}</td><td className="px-3 py-4 text-right text-sm font-extrabold tabular-nums">{money(item.price * item.quantity)}</td><td className="px-5 py-4"><PersonButtons item={item} people={people} onToggle={toggleAssignment} /></td></tr>)}</tbody>
