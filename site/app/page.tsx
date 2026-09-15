@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as pdfWorkerAsset from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import {
   Check,
   ChevronDown,
@@ -101,7 +102,9 @@ function migrateSharedSplit(split: SharedSplit): SavedWorkspace {
 
 async function textFromPdf(file: File) {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/legacy/build/pdf.worker.mjs', import.meta.url).toString();
+  // Vite's `?url` transform provides the worker asset as a default URL export.
+  // oxlint-disable-next-line import/namespace
+  pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerAsset.default;
   const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
   const pages: string[] = [];
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
@@ -298,7 +301,8 @@ export default function Home() {
       setStatus(`${parsed.items.length} items found — new split created`);
     } catch (error) {
       console.error(error);
-      setStatus('Could not find items. Try a clearer image or PDF.');
+      const message = error instanceof Error ? error.message.trim() : '';
+      setStatus(message ? `Could not read receipt: ${message}` : 'Could not find items. Try a clearer image or PDF.');
     } finally {
       setBusy(false);
       if (fileRef.current) fileRef.current.value = '';
