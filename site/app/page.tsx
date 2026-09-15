@@ -34,6 +34,7 @@ type SplitSession = {
   id: string;
   title: string;
   receiptName: string;
+  receiptSubtotal?: number;
   createdAt: string;
   updatedAt: string;
   fingerprint?: string;
@@ -217,7 +218,8 @@ export default function Home() {
   }, [sessions, activeSessionId, hydrated]);
 
   const chargedItems = useMemo(() => items.filter((item) => !item.excluded), [items]);
-  const subtotal = useMemo(() => chargedItems.reduce((sum, item) => sum + item.price * item.quantity, 0), [chargedItems]);
+  const itemSubtotal = useMemo(() => chargedItems.reduce((sum, item) => sum + item.price * item.quantity, 0), [chargedItems]);
+  const subtotal = activeSession.receiptSubtotal ?? itemSubtotal;
   const grandTotal = subtotal - adjustments.savings + adjustments.tax + adjustments.tip + adjustments.delivery;
   const assignedSubtotal = chargedItems.reduce((sum, item) => item.assignedTo.length ? sum + item.price * item.quantity : sum, 0);
   const unassignedCount = chargedItems.filter((item) => item.assignedTo.length === 0).length;
@@ -228,9 +230,9 @@ export default function Home() {
       const share = item.price * item.quantity / item.assignedTo.length;
       item.assignedTo.forEach((personId) => allocated.set(personId, (allocated.get(personId) || 0) + share));
     });
-    const factor = subtotal ? grandTotal / subtotal : 0;
+    const factor = itemSubtotal ? grandTotal / itemSubtotal : 0;
     return people.map((person) => ({ ...person, total: (allocated.get(person.id) || 0) * factor }));
-  }, [people, chargedItems, subtotal, grandTotal]);
+  }, [people, chargedItems, itemSubtotal, grandTotal]);
 
   async function handleFile(file?: File) {
     if (!file) return;
@@ -253,6 +255,11 @@ export default function Home() {
       const fingerprint = receiptFingerprint(parsed);
       const duplicate = sessions.find((session) => fingerprintForSession(session) === fingerprint);
       if (duplicate) {
+        if (parsed.subtotal !== undefined && duplicate.receiptSubtotal !== parsed.subtotal) {
+          setSessions((current) => current.map((session) => session.id === duplicate.id
+            ? { ...session, receiptSubtotal: parsed.subtotal, updatedAt: now() }
+            : session));
+        }
         setActiveSessionId(duplicate.id);
         setStatus(`Duplicate found — opened “${duplicate.title}” instead`);
         return;
@@ -272,6 +279,7 @@ export default function Home() {
           people: sessionPeople,
           items: receiptItems,
           adjustments: parsed.adjustments,
+          receiptSubtotal: parsed.subtotal,
         }));
         setStatus(`${parsed.items.length} items found — split updated`);
         return;
@@ -282,6 +290,7 @@ export default function Home() {
         people: sessionPeople,
         items: receiptItems,
         adjustments: parsed.adjustments,
+        receiptSubtotal: parsed.subtotal,
         reviewedBy: [],
       };
       setSessions((current) => [session, ...current]);
@@ -397,7 +406,7 @@ export default function Home() {
           </section>
 
           <aside className="order-1 h-fit overflow-hidden rounded-[22px] bg-primary text-primary-foreground shadow-[0_18px_60px_rgba(23,57,65,.2)] xl:sticky xl:top-5 xl:order-2">
-            <div className="p-4 sm:p-5"><div className="mb-4 flex items-start justify-between"><div><p className="text-xs font-extrabold uppercase tracking-[.13em] text-[#a9c2c6]">Everyone owes</p><h2 className="mt-1 text-3xl font-black tracking-[-.04em]">{money(grandTotal)}</h2></div><span className="grid size-10 place-items-center rounded-xl bg-white/10"><ReceiptText size={19} /></span></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-[#dff3a8] transition-all" style={{ width: `${subtotal ? Math.min(100, assignedSubtotal / subtotal * 100) : 0}%` }} /></div><div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">{totals.map((person) => { const reviewed = activeSession.reviewedBy.includes(person.id); return <button key={person.id} type="button" aria-label={`${reviewed ? 'Mark' : 'Mark'} ${person.name} as ${reviewed ? 'not reviewed' : 'reviewed'}`} onClick={() => toggleReviewed(person.id)} className="flex min-h-12 items-center justify-between rounded-xl bg-white/[.07] px-3 py-2.5 text-left"><span className="flex items-center gap-2.5"><span className="size-2.5 rounded-full" style={{ background: person.color }} /><span className="font-bold">{person.name}</span></span><span className="flex items-center gap-2"><span className="text-lg font-black tabular-nums">{money(person.total)}</span><span className={cn('grid size-7 place-items-center rounded-full border', reviewed ? 'border-[#dff3a8] bg-[#dff3a8] text-[#183b43]' : 'border-white/20 text-[#91acb1]')}><Check size={15} /></span></span></button>; })}</div>{unassignedCount > 0 && <div className="mt-4 rounded-xl border border-[#f8d585]/25 bg-[#f8d585]/10 px-3 py-2.5 text-xs font-bold text-[#fbe2a5]">{unassignedCount} charged {unassignedCount === 1 ? 'item is' : 'items are'} still unassigned.</div>}</div>
+            <div className="p-4 sm:p-5"><div className="mb-4 flex items-start justify-between"><div><p className="text-xs font-extrabold uppercase tracking-[.13em] text-[#a9c2c6]">Everyone owes</p><h2 className="mt-1 text-3xl font-black tracking-[-.04em]">{money(grandTotal)}</h2></div><span className="grid size-10 place-items-center rounded-xl bg-white/10"><ReceiptText size={19} /></span></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-[#dff3a8] transition-all" style={{ width: `${itemSubtotal ? Math.min(100, assignedSubtotal / itemSubtotal * 100) : 0}%` }} /></div><div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">{totals.map((person) => { const reviewed = activeSession.reviewedBy.includes(person.id); return <button key={person.id} type="button" aria-label={`${reviewed ? 'Mark' : 'Mark'} ${person.name} as ${reviewed ? 'not reviewed' : 'reviewed'}`} onClick={() => toggleReviewed(person.id)} className="flex min-h-12 items-center justify-between rounded-xl bg-white/[.07] px-3 py-2.5 text-left"><span className="flex items-center gap-2.5"><span className="size-2.5 rounded-full" style={{ background: person.color }} /><span className="font-bold">{person.name}</span></span><span className="flex items-center gap-2"><span className="text-lg font-black tabular-nums">{money(person.total)}</span><span className={cn('grid size-7 place-items-center rounded-full border', reviewed ? 'border-[#dff3a8] bg-[#dff3a8] text-[#183b43]' : 'border-white/20 text-[#91acb1]')}><Check size={15} /></span></span></button>; })}</div>{unassignedCount > 0 && <div className="mt-4 rounded-xl border border-[#f8d585]/25 bg-[#f8d585]/10 px-3 py-2.5 text-xs font-bold text-[#fbe2a5]">{unassignedCount} charged {unassignedCount === 1 ? 'item is' : 'items are'} still unassigned.</div>}</div>
             <div className="border-t border-white/10 bg-black/10 p-4 sm:p-5"><div className="mb-4 space-y-2 text-xs text-[#bfd0d3]"><div className="flex justify-between"><span>Items</span><span>{money(subtotal)}</span></div><div className="flex justify-between"><span>Savings</span><span>−{money(adjustments.savings)}</span></div><div className="flex justify-between"><span>Tax + extras</span><span>{money(adjustments.tax + adjustments.tip + adjustments.delivery)}</span></div></div><Button onClick={copySummary} className="h-12 w-full rounded-xl bg-[#dff3a8] font-extrabold text-[#183b43] hover:bg-[#cfee87]">{copied ? <><Check /> Copied!</> : <><Copy /> Copy split summary</>}</Button></div>
           </aside>
         </div>

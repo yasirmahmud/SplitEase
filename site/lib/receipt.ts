@@ -13,7 +13,7 @@ function slugId(value: string, index: number) {
 
 function cleanItemName(value: string) {
   return value
-    .replace(/\s+(?:(?:\d+\s+)?(?:shopped|substituted)|Unavailable|Return complete|You(?:'|’)re all set!.*)$/i, '')
+    .replace(/\s+(?:(?:\d+\s+)?(?:shopped|substituted|weight adjusted)|Unavailable|Cancel(?:l)?ed|Return complete|You(?:'|’)re all set!.*)$/i, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -35,7 +35,7 @@ export function parseReceiptText(raw: string) {
       continue;
     }
     const beforeQty = line.split(/\bQty\b/i)[0]
-      .replace(/(?:Unavailable|\d+ shopped|Return complete|You(?:'|’)re all set!.*)$/i, '')
+      .replace(/(?:(?:\d+\s+)?weight adjusted|Unavailable|Cancel(?:l)?ed|\d+ shopped|Return complete|You(?:'|’)re all set!.*)$/i, '')
       .trim();
     const meaningfulBeforeQty = beforeQty.replace(/^(?:\d+\s*)?(?:shopped|substituted|unavailable|return complete)$/i, '').trim();
     const joined = meaningfulBeforeQty.length > 4 ? line : [...buffer, line].join(' ');
@@ -46,27 +46,33 @@ export function parseReceiptText(raw: string) {
     if (name.length > 2 && !isStatusOnly) {
       const quantity = Number(match[2]);
       const lineTotal = Number(match[3].replace(',', '.'));
-      items.push({ id: slugId(name, items.length), name, quantity, price: lineTotal / quantity, assignedTo: [], excluded: /Unavailable/i.test(joined) });
+      items.push({ id: slugId(name, items.length), name, quantity, price: lineTotal / quantity, assignedTo: [], excluded: /Unavailable|Cancel(?:l)?ed/i.test(joined) });
     }
     buffer = [];
   }
 
-  const value = (pattern: RegExp) => Number(text.match(pattern)?.[1]?.replace(',', '.') || 0);
+  const matchedValue = (pattern: RegExp) => {
+    const match = text.match(pattern)?.[1];
+    return match === undefined ? undefined : Number(match.replace(',', '.'));
+  };
+  const value = (pattern: RegExp) => matchedValue(pattern) ?? 0;
   const deliveryMatch = text.match(/(?:delivery|shipping)[^\n$]*\$(\d+[.,]\d{2})(?:\s+\$?(\d+[.,]?\d{0,2}))?/i);
   return {
     items,
     adjustments: {
       savings: value(/Savings\s+-?\$(\d+[.,]\d{2})/i),
-      tax: value(/Tax\s+\$(\d+[.,]\d{2})/i),
+      tax: value(/Taxes?\s+\$(\d+[.,]\d{2})/i),
       tip: value(/(?:Driver\s+)?tip\s+\$(\d+[.,]\d{2})/i),
       delivery: Number((deliveryMatch?.[2] || deliveryMatch?.[1] || '0').replace(',', '.')),
     },
     merchant: /Walmart/i.test(text) ? 'Walmart' : 'Imported receipt',
     date: text.match(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s+\d{4}/i)?.[0],
+    subtotal: matchedValue(/Subtotal[^\n$]*\$(\d+[.,]\d{2})/i),
+    total: matchedValue(/(?:^|\n)\s*Total\s+\$(\d+[.,]\d{2})/im),
   };
 }
 
-export function receiptFingerprint(receipt: ReturnType<typeof parseReceiptText>) {
+export function receiptFingerprint(receipt: Pick<ReturnType<typeof parseReceiptText>, 'merchant' | 'date' | 'items' | 'adjustments'>) {
   const canonical = [
     receipt.merchant.toLowerCase().replace(/[^a-z0-9]/g, ''),
     receipt.date?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'no-date',
