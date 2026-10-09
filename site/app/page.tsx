@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { calculateReceiptAmounts, parseReceiptText, receiptFingerprint, toggleItemRefund, updateReceiptLinePrice } from '@/lib/receipt';
+import type { ReceiptImport } from '@/supabase/functions/receipt-import/receipt-import-schema';
 import { isSharedSplit, type SharedSplit } from '@/lib/share-state';
 import { supabase } from '@/lib/supabase';
 
@@ -40,12 +41,14 @@ type SplitSession = {
   createdAt: string;
   updatedAt: string;
   fingerprint?: string;
+  importId?: string;
   people: Person[];
   items: ReceiptItem[];
   adjustments: Adjustments;
   reviewedBy: string[];
 };
 type SavedWorkspace = { version: 2; activeSessionId: string; sessions: SplitSession[] };
+type PendingImport = { id: string; payload: ReceiptImport; created_at: string };
 type SyncState = 'loading' | 'saving' | 'saved' | 'offline';
 
 const colors = ['#ff7f66', '#4f86c6', '#8b6cc7', '#32a379', '#e4a93b', '#d65d8a'];
@@ -106,6 +109,13 @@ function isSavedWorkspace(value: unknown): value is SavedWorkspace {
       && session.adjustments && Array.isArray(session.reviewedBy));
 }
 
+function mergeWorkspaces(local: SavedWorkspace, remote: SavedWorkspace): SavedWorkspace {
+  const byId = new Map(remote.sessions.map((session) => [session.id, session]));
+  for (const session of local.sessions) byId.set(session.id, session);
+  const sessions = [...byId.values()];
+  return { version: 2, activeSessionId: sessions.some((session) => session.id === local.activeSessionId) ? local.activeSessionId : sessions[0].id, sessions };
+}
+
 function migrateSharedSplit(split: SharedSplit): SavedWorkspace {
   const timestamp = now();
   const session: SplitSession = { id: 'migrated', title: split.receiptName, receiptName: split.receiptName, createdAt: timestamp, updatedAt: timestamp, people: split.people, items: split.items, adjustments: split.adjustments, reviewedBy: [] };
@@ -141,6 +151,9 @@ export default function Home() {
   const [syncState, setSyncState] = useState<SyncState>('loading');
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [pendingImports, setPendingImports] = useState<PendingImport[]>([]);
+  const [importsError, setImportsError] = useState<string | null>(null);
+  const [importsBusy, setImportsBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const currentVersionRef = useRef<number | null>(null);
   const lastSavedSnapshotRef = useRef('');
@@ -159,6 +172,15 @@ export default function Home() {
   const updateActive = useCallback((change: (session: SplitSession) => SplitSession) => {
     setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...change(session), updatedAt: now(), reviewedBy: [] } : session));
   }, [activeSessionId]);
+
+  const loadPendingImports = useCallback(async () => {
+    const result = await supabase.from('receipt_submissions').select('id,payload,created_at').eq('status', 'pending').order('created_at', { ascending: false }).limit(50);
+    if (result.error) setImportsError(syncFailureMessage(result.error.message));
+    else { setImportsError(null); setPendingImports(result.data as PendingImport[]); }
+  }, []);
+
+  // oxlint-disable-next-line react/react-compiler -- the async fetch updates state after the effect completes.
+  useEffect(() => { void loadPendingImports(); }, [loadPendingImports]);
 
   const toggleReviewed = useCallback((personId: string) => {
     setSessions((current) => current.map((session) => session.id !== activeSessionId ? session : {
@@ -200,7 +222,7 @@ export default function Home() {
       currentVersionRef.current = Number(data.version) || 1;
       const remote = isSavedWorkspace(data.data) ? data.data : isSharedSplit(data.data) ? migrateSharedSplit(data.data) : null;
       const cachedIsNewer = cached?.sessions.some((session) => new Date(session.updatedAt).getTime() > new Date(data.updated_at).getTime()) ?? false;
-      const workspace = cached && (cachedHasPendingChanges || cachedIsNewer || !remote) ? cached : remote;
+      const workspace = cached && (cachedHasPendingChanges || cachedIsNewer || !remote) ? remote ? mergeWorkspaces(cached, remote) : cached : remote;
       lastSavedSnapshotRef.current = remote ? JSON.stringify(remote) : '';
       const needsSync = workspace ? JSON.stringify(workspace) !== lastSavedSnapshotRef.current : false;
       if (workspace) {
@@ -220,16 +242,23 @@ export default function Home() {
   const savePendingWorkspace = useCallback(() => {
     const runSave = async () => {
       if (savingRef.current) return;
-      const pending = pendingWorkspaceRef.current;
+      let pending = pendingWorkspaceRef.current;
       if (!pending || pending.snapshot === lastSavedSnapshotRef.current) return;
       savingRef.current = true;
       setSyncState('saving');
       try {
         for (let attempt = 0; attempt < 4; attempt += 1) {
           if (currentVersionRef.current === null) {
-            const latest = await supabase.from('splitease_state').select('version').eq('id', 'current').single();
+            const latest = await supabase.from('splitease_state').select('version,data').eq('id', 'current').single();
             if (latest.error || !latest.data) throw new Error(latest.error?.message || 'Cloud state is unavailable');
             currentVersionRef.current = Number(latest.data.version);
+            if (isSavedWorkspace(latest.data.data)) {
+              const merged = mergeWorkspaces(pending.workspace, latest.data.data);
+              pending = { workspace: merged, snapshot: JSON.stringify(merged) };
+              pendingWorkspaceRef.current = pending;
+              setSessions(merged.sessions);
+              setActiveSessionId(merged.activeSessionId);
+            }
           }
           const version = currentVersionRef.current;
           const result = await supabase.from('splitease_state')
@@ -269,6 +298,43 @@ export default function Home() {
     };
     void runSave();
   }, []);
+
+  async function acceptImport(importId: string) {
+    setImportsBusy(true);
+    try {
+      const result = await supabase.rpc('accept_receipt_import', { submission_id: importId });
+      if (result.error) throw new Error(result.error.message);
+      const response = result.data?.[0] as { workspace_version: number; workspace_data: unknown } | undefined;
+      if (!response || !isSavedWorkspace(response.workspace_data)) throw new Error('Cloud returned an invalid workspace');
+      const remote = response.workspace_data;
+      const local: SavedWorkspace = { version: 2, activeSessionId, sessions };
+      const merged = mergeWorkspaces(local, remote);
+      merged.activeSessionId = remote.activeSessionId;
+      currentVersionRef.current = Number(response.workspace_version);
+      lastSavedSnapshotRef.current = JSON.stringify(remote);
+      localStorage.setItem(syncedCacheKey, snapshotSignature(lastSavedSnapshotRef.current));
+      pendingWorkspaceRef.current = { workspace: merged, snapshot: JSON.stringify(merged) };
+      setSessions(merged.sessions);
+      setActiveSessionId(merged.activeSessionId);
+      setEditingSessionId(null);
+      setStatus('Imported receipt opened as a new split');
+      await loadPendingImports();
+    } catch (error) {
+      setStatus(`Could not import receipt: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally { setImportsBusy(false); }
+  }
+
+  async function rejectImport(importId: string) {
+    setImportsBusy(true);
+    try {
+      const result = await supabase.rpc('reject_receipt_import', { submission_id: importId });
+      if (result.error) throw new Error(result.error.message);
+      setPendingImports((current) => current.filter((entry) => entry.id !== importId));
+      setStatus('Receipt dismissed from inbox');
+    } catch (error) {
+      setStatus(`Could not dismiss receipt: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally { setImportsBusy(false); }
+  }
 
   useEffect(() => {
     if (!hydrated) return;
@@ -458,6 +524,11 @@ export default function Home() {
           <div className="flex snap-x gap-2 overflow-x-auto pb-1">
             {displayedSessions.map((session) => <button key={session.id} onClick={() => { setActiveSessionId(session.id); setEditingSessionId(null); setStatus('Saved split opened'); }} className={cn('min-w-[170px] snap-start rounded-xl border px-3 py-2.5 text-left transition sm:min-w-[210px]', session.id === activeSession.id ? 'border-primary bg-primary text-white shadow-md' : 'border-[#183b43]/10 bg-[#fffdfa] hover:border-[#183b43]/25')} aria-current={session.id === activeSession.id ? 'true' : undefined}><span className="block truncate text-sm font-extrabold">{session.title}</span><span className={cn('mt-1 block text-xs font-medium', session.id === activeSession.id ? 'text-white/65' : 'text-muted-foreground')}>{session.items.length} items · {shortDate(session.updatedAt)}</span></button>)}
           </div>
+        </section>
+
+        <section aria-label="Pending receipt imports" className="mb-5 rounded-[20px] border border-[#183b43]/10 bg-white/65 p-3 shadow-[0_8px_30px_rgba(27,52,58,.05)] sm:p-4">
+          <div className="flex items-center justify-between gap-3 px-1"><div className="flex items-center gap-2"><Upload size={17} /><h2 className="text-sm font-extrabold">Pending receipts</h2><span className="rounded-full bg-[#e8efed] px-2 py-0.5 text-xs font-bold text-[#527078]">{pendingImports.length}</span></div><div className="flex items-center gap-2"><a className="text-xs font-bold text-primary underline" href="https://github.com/yasirmahmud/SplitEase/blob/main/docs/receipt-import-api.md" target="_blank" rel="noreferrer">API format</a><Button variant="ghost" size="sm" onClick={() => void loadPendingImports()} disabled={importsBusy}>Refresh</Button></div></div>
+          {importsError ? <p className="px-1 pt-2 text-xs text-[#a06426]">Could not load receipt inbox: {importsError}</p> : pendingImports.length === 0 ? <p className="px-1 pt-2 text-xs text-muted-foreground">Receipts submitted through the API will appear here for review.</p> : <div className="mt-3 grid gap-2 md:grid-cols-2">{pendingImports.map((entry) => <article key={entry.id} className="rounded-xl border border-[#183b43]/10 bg-[#fffdfa] p-3"><div className="flex items-start justify-between gap-3"><div><h3 className="text-sm font-extrabold">{entry.payload.merchant}</h3><p className="text-xs text-muted-foreground">{entry.payload.purchased_on} · {entry.payload.items.length} items · {entry.payload.receipt_type.replaceAll('_', ' ')}</p></div><span className="text-sm font-black">{money(entry.payload.total_cents / 100)}</span></div><p className="mt-2 text-xs text-muted-foreground">{entry.payload.items.filter((item) => item.state === 'refunded').length} refunded · {entry.payload.items.filter((item) => item.state === 'not_charged').length} not charged</p><details className="mt-2 text-xs"><summary className="cursor-pointer font-bold text-primary">Review items and charges</summary><ul className="mt-2 space-y-1">{entry.payload.items.map((item) => <li key={item.external_item_id} className="flex justify-between gap-2"><span>{item.quantity} × {item.name} <span className="text-muted-foreground">({item.state.replaceAll('_', ' ')})</span></span><span className="shrink-0 font-bold">{money(item.line_total_cents / 100)}</span></li>)}</ul><p className="mt-2 text-muted-foreground">Discount {money(entry.payload.discount_cents / 100)} · Tax {money(entry.payload.tax_cents / 100)} · Tip {money(entry.payload.tip_cents / 100)} · Delivery {money(entry.payload.delivery_cents / 100)} · Other refund {money(entry.payload.order_refund_cents / 100)}</p></details><div className="mt-3 flex gap-2"><Button size="sm" onClick={() => void acceptImport(entry.id)} disabled={importsBusy}>Import split</Button><Button size="sm" variant="outline" onClick={() => void rejectImport(entry.id)} disabled={importsBusy}>Dismiss</Button></div></article>)}</div>}
         </section>
 
         <div className="grid gap-5 xl:grid-cols-[1fr_310px]">

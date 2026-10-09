@@ -23,3 +23,7 @@ npm run dev
 Push this repository to GitHub with `main` as the default branch, then open **Settings → Pages** and choose **GitHub Actions** as the source. The included workflow builds and deploys the site automatically.
 
 The original example receipt remains in `example_wallmart_receipt/` and is not published with the site.
+
+## Receipt import API
+
+External processors can submit normalized receipt JSON through a Supabase Edge Function. The website shows submissions in a pending inbox, then imports an accepted receipt into a new split. See the [API contract and deployment steps](docs/receipt-import-api.md), [OpenAPI specification](docs/receipt-import.openapi.yaml), and [sample payload](docs/receipt-import.example.json). Deploy `site/supabase/receipt_import.sql` and the `receipt-import` Edge Function before using this feature.

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "external_receipt_id": "order-2026-10-09-1842",
+  "receipt_type": "grocery_delivery",
+  "merchant": "Example Market",
+  "purchased_on": "2026-10-09",
+  "currency": "USD",
+  "items": [
+    {
+      "external_item_id": "milk",
+      "name": "Whole milk",
+      "quantity": 1,
+      "line_total_cents": 499,
+      "state": "charged"
+    },
+    {
+      "external_item_id": "bread",
+      "name": "Sourdough bread",
+      "quantity": 1,
+      "line_total_cents": 650,
+      "state": "refunded"
+    },
+    {
+      "external_item_id": "eggs",
+      "name": "Eggs, unavailable",
+      "quantity": 1,
+      "line_total_cents": 399,
+      "state": "not_charged"
+    }
+  ],
+  "subtotal_cents": 1149,
+  "discount_cents": 100,
+  "tax_cents": 0,
+  "tip_cents": 200,
+  "delivery_cents": 299,
+  "order_refund_cents": 0,
+  "total_cents": 898
+}

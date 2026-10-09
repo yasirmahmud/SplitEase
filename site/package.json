@@ -10,7 +10,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "verify:sample": "node --experimental-strip-types scripts/verify-sample.mjs",
-    "lint": "oxlint app/page.tsx src/main.tsx lib/receipt.ts components/ui/button.tsx components/ui/input.tsx",
+    "verify:import": "node --experimental-strip-types scripts/verify-import.mjs",
+    "lint": "oxlint app/page.tsx src/main.tsx lib/receipt.ts supabase/functions/receipt-import/receipt-import-schema.ts components/ui/button.tsx components/ui/input.tsx",
     "format": "oxfmt"
   },
   "dependencies": {
