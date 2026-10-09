@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { parseReceiptText, receiptFingerprint, updateReceiptLinePrice } from '../lib/receipt.ts';
+import { calculateReceiptAmounts, parseReceiptText, receiptFingerprint, toggleItemRefund, updateReceiptLinePrice } from '../lib/receipt.ts';
 import { decodeSharedSplit, encodeSharedSplit } from '../lib/share-state.ts';
 
 const fixtures = [
@@ -65,6 +65,21 @@ const excludedItem = refundReceipt?.parsed.items.find((item) => item.excluded);
 if (!refundReceipt || !excludedItem) throw new Error('Fixture needs an excluded item for price editing');
 const editedExcluded = updateReceiptLinePrice(refundReceipt.parsed.items, excludedItem.id, excludedItem.price * excludedItem.quantity + 1, refundReceipt.parsed.subtotal);
 if (editedExcluded.receiptSubtotal !== refundReceipt.parsed.subtotal) throw new Error('Editing an excluded item changed the charged subtotal');
+const originalAmounts = calculateReceiptAmounts(original.parsed.items, original.parsed.adjustments, original.parsed.subtotal);
+const refundedItems = toggleItemRefund(original.parsed.items, chargedItem.id);
+const refundedAmounts = calculateReceiptAmounts(refundedItems, original.parsed.adjustments, original.parsed.subtotal);
+const refundAmount = chargedItem.price * chargedItem.quantity;
+if (Math.abs(refundedAmounts.grandTotal - (originalAmounts.grandTotal - refundAmount)) > 0.001) throw new Error('Refunding an item did not lower the total by its line price');
+if (refundedAmounts.chargedItems.some((item) => item.id === chargedItem.id)) throw new Error('A refunded item remained in the split');
+const restoredAmounts = calculateReceiptAmounts(toggleItemRefund(refundedItems, chargedItem.id), original.parsed.adjustments, original.parsed.subtotal);
+if (Math.abs(restoredAmounts.grandTotal - originalAmounts.grandTotal) > 0.001) throw new Error('Undoing an item refund did not restore the total');
+const unprintedSubtotal = calculateReceiptAmounts(refundedItems, original.parsed.adjustments);
+const originalUnprintedSubtotal = calculateReceiptAmounts(original.parsed.items, original.parsed.adjustments);
+if (Math.abs(unprintedSubtotal.grandTotal - (originalUnprintedSubtotal.grandTotal - refundAmount)) > 0.001) throw new Error('Refunding without a printed subtotal was counted twice');
+const repricedRefund = updateReceiptLinePrice(refundedItems, chargedItem.id, refundAmount + 1, original.parsed.subtotal);
+const repricedRefundAmounts = calculateReceiptAmounts(repricedRefund.items, original.parsed.adjustments, repricedRefund.receiptSubtotal);
+if (Math.abs(repricedRefundAmounts.grandTotal - refundedAmounts.grandTotal) > 0.001) throw new Error('Repricing a refunded item changed the amount owed');
+if (toggleItemRefund(refundReceipt.parsed.items, excludedItem.id).some((item) => item.refunded)) throw new Error('An already excluded item gained a second refund');
 const firstFingerprint = receiptFingerprint(original.parsed);
 const secondFingerprint = receiptFingerprint(parseReceiptText(original.text));
 if (firstFingerprint !== secondFingerprint) throw new Error('The same receipt did not produce the same duplicate-detection fingerprint');

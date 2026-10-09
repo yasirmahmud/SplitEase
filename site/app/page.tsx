@@ -25,12 +25,12 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
-import { parseReceiptText, receiptFingerprint, updateReceiptLinePrice } from '@/lib/receipt';
+import { calculateReceiptAmounts, parseReceiptText, receiptFingerprint, toggleItemRefund, updateReceiptLinePrice } from '@/lib/receipt';
 import { isSharedSplit, type SharedSplit } from '@/lib/share-state';
 import { supabase } from '@/lib/supabase';
 
 type Person = { id: string; name: string; color: string };
-type ReceiptItem = { id: string; name: string; quantity: number; price: number; assignedTo: string[]; excluded?: boolean };
+type ReceiptItem = { id: string; name: string; quantity: number; price: number; assignedTo: string[]; excluded?: boolean; refunded?: boolean };
 type Adjustments = { savings: number; tax: number; tip: number; delivery: number; refund?: number };
 type SplitSession = {
   id: string;
@@ -282,10 +282,10 @@ export default function Home() {
     return () => { if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current); };
   }, [sessions, activeSessionId, hydrated, savePendingWorkspace]);
 
-  const chargedItems = useMemo(() => items.filter((item) => !item.excluded), [items]);
-  const itemSubtotal = useMemo(() => chargedItems.reduce((sum, item) => sum + item.price * item.quantity, 0), [chargedItems]);
-  const subtotal = activeSession.receiptSubtotal ?? itemSubtotal;
-  const grandTotal = subtotal - adjustments.savings + adjustments.tax + adjustments.tip + adjustments.delivery - (adjustments.refund ?? 0);
+  const { chargedItems, itemSubtotal, itemRefunds, subtotal, grandTotal } = useMemo(
+    () => calculateReceiptAmounts(items, adjustments, activeSession.receiptSubtotal),
+    [items, adjustments, activeSession.receiptSubtotal],
+  );
   const assignedSubtotal = chargedItems.reduce((sum, item) => item.assignedTo.length ? sum + item.price * item.quantity : sum, 0);
   const unassignedCount = chargedItems.filter((item) => item.assignedTo.length === 0).length;
   const totals = useMemo(() => {
@@ -402,11 +402,15 @@ export default function Home() {
     updateActive((session) => ({ ...session, ...updateReceiptLinePrice(session.items, itemId, lineTotal, session.receiptSubtotal) }));
   }
 
+  function toggleRefund(itemId: string) {
+    updateActive((session) => ({ ...session, items: toggleItemRefund(session.items, itemId) }));
+  }
+
   function addPerson() {
     const name = personName.trim();
     if (!name) return;
     const id = `${slugId(name, people.length)}-${Date.now()}`;
-    updateActive((session) => ({ ...session, people: [...session.people, { id, name, color: colors[session.people.length % colors.length] }], items: session.items.map((item) => item.excluded ? item : { ...item, assignedTo: [...new Set([...item.assignedTo, id])] }) }));
+    updateActive((session) => ({ ...session, people: [...session.people, { id, name, color: colors[session.people.length % colors.length] }], items: session.items.map((item) => item.excluded || item.refunded ? item : { ...item, assignedTo: [...new Set([...item.assignedTo, id])] }) }));
     setPersonName('');
   }
 
@@ -474,33 +478,42 @@ export default function Home() {
             {items.length === 0 ? <button type="button" disabled={busy} onClick={() => fileRef.current?.click()} className="group grid min-h-64 w-full place-items-center border-0 bg-white px-6 py-12 text-center transition hover:bg-[#f8faf6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#4b828b] disabled:cursor-wait" aria-label="Upload a receipt to this split"><span><span className="mx-auto grid size-14 place-items-center rounded-2xl bg-[#eaf0ef] text-primary transition group-hover:-translate-y-0.5 group-hover:bg-[#dff3a8]">{busy ? <LoaderCircle className="animate-spin" size={23} /> : <Upload size={23} />}</span><span className="mt-4 block font-extrabold">{busy ? 'Processing receipt…' : 'Upload a receipt'}</span><span className="mt-1 block text-sm text-muted-foreground">Choose a PDF or image to add its items.</span></span></button> : <>
               <div className="hidden overflow-x-auto md:block"><table className="w-full min-w-[720px] border-collapse">
                 <thead><tr className="border-b border-[#183b43]/10 bg-[#f8faf6] text-left text-[11px] font-extrabold uppercase tracking-[.1em] text-[#6a7f84]"><th className="px-5 py-3">Item{itemEditMode && ' · edit name'}</th><th className="px-3 py-3 text-center">Qty</th><th className="px-3 py-3 text-right">Line total{itemEditMode && ' · edit'}</th><th className="px-5 py-3">Split between</th></tr></thead>
-                <tbody>{items.map((item) => <tr key={item.id} className={cn('border-b border-[#183b43]/8 last:border-0', item.excluded && 'bg-[#fafafa] opacity-55')}>
-                  <td className="max-w-[390px] px-5 py-4">{itemEditMode ? <EditableItemName key={`${item.id}:${item.name}`} item={item} onSave={editItemName} /> : <div className={cn('text-sm font-bold leading-5', item.excluded && 'line-through')}>{item.name}</div>}{item.excluded && <span className="mt-1 inline-block rounded-full bg-[#eceeed] px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide">Not charged</span>}</td>
+                <tbody>{items.map((item) => <tr key={item.id} className={cn('border-b border-[#183b43]/8 last:border-0', item.excluded && 'bg-[#fafafa] opacity-55', item.refunded && 'bg-[#fffaf2]')}>
+                  <td className="max-w-[390px] px-5 py-4">{itemEditMode ? <EditableItemName key={`${item.id}:${item.name}`} item={item} onSave={editItemName} /> : <div className={cn('text-sm font-bold leading-5', (item.excluded || item.refunded) && 'line-through')}>{item.name}</div>}<ItemChargeStatus item={item} editMode={itemEditMode} onToggle={toggleRefund} /></td>
                   <td className="px-3 py-4 text-center text-sm font-semibold text-muted-foreground">{item.quantity}</td>
                   <td className="w-36 px-3 py-4 text-right">{itemEditMode ? <EditableLinePrice key={`${item.id}:${Math.round(item.price * item.quantity * 100)}`} item={item} onSave={editItemLinePrice} /> : <span className="text-sm font-extrabold tabular-nums">{money(item.price * item.quantity)}</span>}</td>
                   <td className="px-5 py-4"><PersonButtons item={item} people={people} onToggle={toggleAssignment} /></td>
                 </tr>)}</tbody>
               </table></div>
-              <div className="divide-y divide-[#183b43]/10 md:hidden">{items.map((item) => <article key={item.id} className={cn('p-4', item.excluded && 'bg-[#fafafa] opacity-55')}>
-                <div className="flex items-start gap-3"><div className="min-w-0 flex-1">{itemEditMode ? <EditableItemName key={`${item.id}:${item.name}`} item={item} onSave={editItemName} mobile /> : <h3 className={cn('text-sm font-bold leading-5', item.excluded && 'line-through')}>{item.name}</h3>}<p className="mt-1 text-xs font-semibold text-muted-foreground">Qty {item.quantity}</p></div><div className="w-28 shrink-0">{itemEditMode ? <><p className="mb-1 text-right text-[10px] font-extrabold uppercase tracking-wide text-muted-foreground">Line total</p><EditableLinePrice key={`${item.id}:${Math.round(item.price * item.quantity * 100)}`} item={item} onSave={editItemLinePrice} mobile /></> : <span className="block text-right text-sm font-black tabular-nums">{money(item.price * item.quantity)}</span>}</div></div>
-                {item.excluded ? <span className="mt-3 inline-block rounded-full bg-[#eceeed] px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide">Not charged</span> : <div className="mt-3"><p className="mb-2 text-[11px] font-extrabold uppercase tracking-[.08em] text-[#6a7f84]">Split between</p><PersonButtons item={item} people={people} onToggle={toggleAssignment} mobile /></div>}
+              <div className="divide-y divide-[#183b43]/10 md:hidden">{items.map((item) => <article key={item.id} className={cn('p-4', item.excluded && 'bg-[#fafafa] opacity-55', item.refunded && 'bg-[#fffaf2]')}>
+                <div className="flex items-start gap-3"><div className="min-w-0 flex-1">{itemEditMode ? <EditableItemName key={`${item.id}:${item.name}`} item={item} onSave={editItemName} mobile /> : <h3 className={cn('text-sm font-bold leading-5', (item.excluded || item.refunded) && 'line-through')}>{item.name}</h3>}<p className="mt-1 text-xs font-semibold text-muted-foreground">Qty {item.quantity}</p></div><div className="w-28 shrink-0">{itemEditMode ? <><p className="mb-1 text-right text-[10px] font-extrabold uppercase tracking-wide text-muted-foreground">Line total</p><EditableLinePrice key={`${item.id}:${Math.round(item.price * item.quantity * 100)}`} item={item} onSave={editItemLinePrice} mobile /></> : <span className="block text-right text-sm font-black tabular-nums">{money(item.price * item.quantity)}</span>}</div></div>
+                <ItemChargeStatus item={item} editMode={itemEditMode} onToggle={toggleRefund} />
+                {!item.excluded && !item.refunded && <div className="mt-3"><p className="mb-2 text-[11px] font-extrabold uppercase tracking-[.08em] text-[#6a7f84]">Split between</p><PersonButtons item={item} people={people} onToggle={toggleAssignment} mobile /></div>}
               </article>)}</div>
-              <div className="border-t border-[#183b43]/10 bg-[#fffdfa] p-4 sm:p-5"><Button type="button" variant={itemEditMode ? 'default' : 'outline'} className="h-11 w-full rounded-xl font-bold" aria-pressed={itemEditMode} onClick={() => setEditingSessionId(itemEditMode ? null : activeSession.id)}>{itemEditMode ? <><Check /> Done editing</> : <><Pencil /> Edit item names and prices</>}</Button></div>
+              <div className="border-t border-[#183b43]/10 bg-[#fffdfa] p-4 sm:p-5"><Button type="button" variant={itemEditMode ? 'default' : 'outline'} className="h-11 w-full rounded-xl font-bold" aria-pressed={itemEditMode} onClick={() => setEditingSessionId(itemEditMode ? null : activeSession.id)}>{itemEditMode ? <><Check /> Done editing</> : <><Pencil /> Edit items</>}</Button></div>
             </>}
 
             <button className="flex min-h-14 w-full items-center justify-between border-t border-[#183b43]/10 bg-[#fffdfa] px-4 py-4 text-sm font-extrabold sm:px-5" onClick={() => setShowAdjustments((open) => !open)} aria-expanded={showAdjustments}><span className="flex items-center gap-2"><CircleDollarSign size={17} /> Tax, savings, refunds & extras</span><ChevronDown size={17} className={cn('transition', showAdjustments && 'rotate-180')} /></button>
-            {showAdjustments && <div className="grid grid-cols-2 gap-3 border-t border-[#183b43]/10 bg-[#f8faf6] p-4 sm:grid-cols-5 sm:p-5">{(['savings', 'tax', 'delivery', 'tip', 'refund'] as const).map((key) => <label key={key} className="text-xs font-extrabold capitalize text-[#597177]">{key}<div className="relative mt-1"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span><Input className="h-11 bg-white pl-7" min="0" step="0.01" inputMode="decimal" type="number" value={adjustments[key] ?? 0} onChange={(event) => updateActive((session) => ({ ...session, adjustments: { ...session.adjustments, [key]: Number(event.target.value) } }))} /></div></label>)}</div>}
+            {showAdjustments && <div className="grid grid-cols-2 gap-3 border-t border-[#183b43]/10 bg-[#f8faf6] p-4 sm:grid-cols-5 sm:p-5">{(['savings', 'tax', 'delivery', 'tip', 'refund'] as const).map((key) => <label key={key} className="text-xs font-extrabold capitalize text-[#597177]">{key === 'refund' ? 'Receipt refund' : key}<div className="relative mt-1"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span><Input className="h-11 bg-white pl-7" min="0" step="0.01" inputMode="decimal" type="number" value={adjustments[key] ?? 0} onChange={(event) => updateActive((session) => ({ ...session, adjustments: { ...session.adjustments, [key]: Number(event.target.value) } }))} /></div></label>)}</div>}
           </section>
 
           <aside className="order-1 h-fit overflow-hidden rounded-[22px] bg-primary text-primary-foreground shadow-[0_18px_60px_rgba(23,57,65,.2)] xl:sticky xl:top-5 xl:order-2">
             <div className="p-4 sm:p-5"><div className="mb-4 flex items-start justify-between"><div><p className="text-xs font-extrabold uppercase tracking-[.13em] text-[#a9c2c6]">Everyone owes</p><h2 className="mt-1 text-3xl font-black tracking-[-.04em]">{money(grandTotal)}</h2></div><span className="grid size-10 place-items-center rounded-xl bg-white/10"><ReceiptText size={19} /></span></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-[#dff3a8] transition-all" style={{ width: `${itemSubtotal ? Math.min(100, assignedSubtotal / itemSubtotal * 100) : 0}%` }} /></div><div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">{totals.map((person) => { const reviewed = activeSession.reviewedBy.includes(person.id); return <button key={person.id} type="button" aria-label={`${reviewed ? 'Mark' : 'Mark'} ${person.name} as ${reviewed ? 'not reviewed' : 'reviewed'}`} onClick={() => toggleReviewed(person.id)} className="flex min-h-12 items-center justify-between rounded-xl bg-white/[.07] px-3 py-2.5 text-left"><span className="flex items-center gap-2.5"><span className="size-2.5 rounded-full" style={{ background: person.color }} /><span className="font-bold">{person.name}</span></span><span className="flex items-center gap-2"><span className="text-lg font-black tabular-nums">{money(person.total)}</span><span className={cn('grid size-7 place-items-center rounded-full border', reviewed ? 'border-[#dff3a8] bg-[#dff3a8] text-[#183b43]' : 'border-white/20 text-[#91acb1]')}><Check size={15} /></span></span></button>; })}</div>{unassignedCount > 0 && <div className="mt-4 rounded-xl border border-[#f8d585]/25 bg-[#f8d585]/10 px-3 py-2.5 text-xs font-bold text-[#fbe2a5]">{unassignedCount} charged {unassignedCount === 1 ? 'item is' : 'items are'} still unassigned.</div>}</div>
-            <div className="border-t border-white/10 bg-black/10 p-4 sm:p-5"><div className="mb-4 space-y-2 text-xs text-[#bfd0d3]"><div className="flex justify-between"><span>Items</span><span>{money(subtotal)}</span></div><div className="flex justify-between"><span>Savings</span><span>−{money(adjustments.savings)}</span></div><div className="flex justify-between"><span>Tax + extras</span><span>{money(adjustments.tax + adjustments.tip + adjustments.delivery)}</span></div>{(adjustments.refund ?? 0) > 0 && <div className="flex justify-between"><span>Refund</span><span>−{money(adjustments.refund ?? 0)}</span></div>}</div><Button onClick={copySummary} className="h-12 w-full rounded-xl bg-[#dff3a8] font-extrabold text-[#183b43] hover:bg-[#cfee87]">{copied ? <><Check /> Copied!</> : <><Copy /> Copy split summary</>}</Button></div>
+            <div className="border-t border-white/10 bg-black/10 p-4 sm:p-5"><div className="mb-4 space-y-2 text-xs text-[#bfd0d3]"><div className="flex justify-between"><span>Items</span><span>{money(subtotal)}</span></div><div className="flex justify-between"><span>Savings</span><span>−{money(adjustments.savings)}</span></div><div className="flex justify-between"><span>Tax + extras</span><span>{money(adjustments.tax + adjustments.tip + adjustments.delivery)}</span></div>{(adjustments.refund ?? 0) > 0 && <div className="flex justify-between"><span>Receipt refund</span><span>−{money(adjustments.refund ?? 0)}</span></div>}{itemRefunds > 0 && <div className="flex justify-between"><span>Item refunds</span><span>−{money(itemRefunds)}</span></div>}</div><Button onClick={copySummary} className="h-12 w-full rounded-xl bg-[#dff3a8] font-extrabold text-[#183b43] hover:bg-[#cfee87]">{copied ? <><Check /> Copied!</> : <><Copy /> Copy split summary</>}</Button></div>
           </aside>
         </div>
       </section>
       <footer className="mx-auto flex max-w-[1440px] flex-col gap-2 border-t border-[#183b43]/10 px-4 py-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-5 lg:px-8"><p>Receipt files stay on your device; parsed split details autosave through Supabase.</p><p>PDF + image receipts · Duplicate-aware</p></footer>
     </main>
   );
+}
+
+function ItemChargeStatus({ item, editMode, onToggle }: { item: ReceiptItem; editMode: boolean; onToggle: (itemId: string) => void }) {
+  if (!item.excluded && !item.refunded && !editMode) return null;
+  return <div className="mt-2 flex flex-wrap items-center gap-2">
+    {(item.excluded || item.refunded) && <span className="inline-block rounded-full bg-[#eceeed] px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide">{item.refunded ? 'Refunded · not charged' : 'Not charged'}</span>}
+    {editMode && !item.excluded && <button type="button" aria-pressed={!!item.refunded} aria-label={`${item.refunded ? 'Undo refund for' : 'Refund'} ${item.name}`} onClick={() => onToggle(item.id)} className="min-h-8 rounded-full border border-[#183b43]/15 bg-white px-2.5 text-xs font-bold text-primary transition hover:bg-[#edf4ef] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">{item.refunded ? 'Undo refund' : 'Mark not charged (refund)'}</button>}
+  </div>;
 }
 
 function EditableItemName({ item, onSave, mobile = false }: { item: ReceiptItem; onSave: (itemId: string, name: string) => void; mobile?: boolean }) {
@@ -555,5 +568,5 @@ function EditableLinePrice({ item, onSave, mobile = false }: { item: ReceiptItem
 }
 
 function PersonButtons({ item, people, onToggle, mobile = false }: { item: ReceiptItem; people: Person[]; onToggle: (itemId: string, personId: string) => void; mobile?: boolean }) {
-  return <div className="flex flex-wrap gap-2">{people.map((person) => { const active = item.assignedTo.includes(person.id); return <button key={person.id} disabled={item.excluded} onClick={() => onToggle(item.id, person.id)} aria-pressed={active} aria-label={`${active ? 'Remove' : 'Assign'} ${person.name}`} className={cn('flex items-center justify-center rounded-full border-2 text-xs font-black transition active:scale-95 disabled:cursor-not-allowed', mobile ? 'min-h-11 gap-1.5 px-3' : 'size-9', active ? 'text-white shadow-sm' : 'border-[#dce3e2] bg-white text-[#72878b]')} style={active ? { background: person.color, borderColor: person.color } : undefined}>{active && <Check size={14} strokeWidth={3} />}{mobile && person.name}{!mobile && !active && person.name.slice(0, 1).toUpperCase()}</button>; })}</div>;
+  return <div className="flex flex-wrap gap-2">{people.map((person) => { const active = item.assignedTo.includes(person.id); return <button key={person.id} disabled={item.excluded || item.refunded} onClick={() => onToggle(item.id, person.id)} aria-pressed={active} aria-label={`${active ? 'Remove' : 'Assign'} ${person.name}`} className={cn('flex items-center justify-center rounded-full border-2 text-xs font-black transition active:scale-95 disabled:cursor-not-allowed', mobile ? 'min-h-11 gap-1.5 px-3' : 'size-9', active ? 'text-white shadow-sm' : 'border-[#dce3e2] bg-white text-[#72878b]')} style={active ? { background: person.color, borderColor: person.color } : undefined}>{active && <Check size={14} strokeWidth={3} />}{mobile && person.name}{!mobile && !active && person.name.slice(0, 1).toUpperCase()}</button>; })}</div>;
 }

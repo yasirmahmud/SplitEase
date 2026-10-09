@@ -35,6 +35,7 @@ export function isSharedSplit(value: unknown): value is SharedSplit {
   if (parsed.adjustments.refund !== undefined && typeof parsed.adjustments.refund !== 'number') return false;
   if (parsed.people.some((person) => typeof person?.id !== 'string' || typeof person?.name !== 'string' || typeof person?.color !== 'string')) return false;
   if (parsed.items.some((item) => typeof item?.id !== 'string' || typeof item?.name !== 'string' || typeof item?.price !== 'number' || typeof item?.quantity !== 'number' || !Array.isArray(item?.assignedTo))) return false;
+  if (parsed.items.some((item) => item.refunded !== undefined && typeof item.refunded !== 'boolean')) return false;
   return true;
 }
 

@@ -5,7 +5,23 @@ export type ParsedReceiptItem = {
   price: number;
   assignedTo: string[];
   excluded?: boolean;
+  refunded?: boolean;
 };
+
+export type ReceiptAdjustments = { savings: number; tax: number; tip: number; delivery: number; refund?: number };
+
+export function calculateReceiptAmounts<T extends ParsedReceiptItem>(items: T[], adjustments: ReceiptAdjustments, receiptSubtotal?: number) {
+  const chargedItems = items.filter((item) => !item.excluded && !item.refunded);
+  const itemSubtotal = chargedItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const itemRefunds = items.filter((item) => item.refunded).reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const subtotal = receiptSubtotal ?? itemSubtotal + itemRefunds;
+  const grandTotal = subtotal - adjustments.savings + adjustments.tax + adjustments.tip + adjustments.delivery - (adjustments.refund ?? 0) - itemRefunds;
+  return { chargedItems, itemSubtotal, itemRefunds, subtotal, grandTotal };
+}
+
+export function toggleItemRefund<T extends ParsedReceiptItem>(items: T[], itemId: string) {
+  return items.map((item) => item.id === itemId && !item.excluded ? { ...item, refunded: !item.refunded } : item);
+}
 
 export function updateReceiptLinePrice<T extends ParsedReceiptItem>(items: T[], itemId: string, lineTotal: number, receiptSubtotal?: number) {
   const item = items.find((entry) => entry.id === itemId);
@@ -97,6 +113,7 @@ export function receiptFingerprint(receipt: Pick<ReturnType<typeof parseReceiptT
       item.quantity,
       Math.round(item.price * 100),
       item.excluded ? 1 : 0,
+      ...(item.refunded ? ['refunded'] : []),
     ].join(':')),
     ...(['savings', 'tax', 'tip', 'delivery'] as const).map((key) => Math.round(receipt.adjustments[key] * 100)),
     ...(receipt.adjustments.refund ? [`refund:${Math.round(receipt.adjustments.refund * 100)}`] : []),
