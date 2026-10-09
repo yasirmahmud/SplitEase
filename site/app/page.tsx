@@ -24,7 +24,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
-import { parseReceiptText, receiptFingerprint } from '@/lib/receipt';
+import { parseReceiptText, receiptFingerprint, updateReceiptLinePrice } from '@/lib/receipt';
 import { isSharedSplit, type SharedSplit } from '@/lib/share-state';
 import { supabase } from '@/lib/supabase';
 
@@ -317,7 +317,7 @@ export default function Home() {
       const fingerprint = receiptFingerprint(parsed);
       const duplicate = sessions.find((session) => fingerprintForSession(session) === fingerprint);
       if (duplicate) {
-        if (parsed.subtotal !== undefined && duplicate.receiptSubtotal !== parsed.subtotal) {
+        if (parsed.subtotal !== undefined && duplicate.receiptSubtotal === undefined) {
           setSessions((current) => current.map((session) => session.id === duplicate.id
             ? { ...session, receiptSubtotal: parsed.subtotal, updatedAt: now() }
             : session));
@@ -385,6 +385,14 @@ export default function Home() {
 
   function toggleAssignment(itemId: string, personId: string) {
     updateActive((session) => ({ ...session, items: session.items.map((item) => item.id !== itemId ? item : { ...item, assignedTo: item.assignedTo.includes(personId) ? item.assignedTo.filter((id) => id !== personId) : [...item.assignedTo, personId] }) }));
+  }
+
+  function editItemName(itemId: string, name: string) {
+    updateActive((session) => ({ ...session, items: session.items.map((item) => item.id === itemId ? { ...item, name } : item) }));
+  }
+
+  function editItemLinePrice(itemId: string, lineTotal: number) {
+    updateActive((session) => ({ ...session, ...updateReceiptLinePrice(session.items, itemId, lineTotal, session.receiptSubtotal) }));
   }
 
   function addPerson() {
@@ -458,10 +466,18 @@ export default function Home() {
 
             {items.length === 0 ? <button type="button" disabled={busy} onClick={() => fileRef.current?.click()} className="group grid min-h-64 w-full place-items-center border-0 bg-white px-6 py-12 text-center transition hover:bg-[#f8faf6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#4b828b] disabled:cursor-wait" aria-label="Upload a receipt to this split"><span><span className="mx-auto grid size-14 place-items-center rounded-2xl bg-[#eaf0ef] text-primary transition group-hover:-translate-y-0.5 group-hover:bg-[#dff3a8]">{busy ? <LoaderCircle className="animate-spin" size={23} /> : <Upload size={23} />}</span><span className="mt-4 block font-extrabold">{busy ? 'Processing receipt…' : 'Upload a receipt'}</span><span className="mt-1 block text-sm text-muted-foreground">Choose a PDF or image to add its items.</span></span></button> : <>
               <div className="hidden overflow-x-auto md:block"><table className="w-full min-w-[720px] border-collapse">
-                <thead><tr className="border-b border-[#183b43]/10 bg-[#f8faf6] text-left text-[11px] font-extrabold uppercase tracking-[.1em] text-[#6a7f84]"><th className="px-5 py-3">Item</th><th className="px-3 py-3 text-center">Qty</th><th className="px-3 py-3 text-right">Price</th><th className="px-5 py-3">Split between</th></tr></thead>
-                <tbody>{items.map((item) => <tr key={item.id} className={cn('border-b border-[#183b43]/8 last:border-0', item.excluded && 'bg-[#fafafa] opacity-55')}><td className="max-w-[390px] px-5 py-4"><div className={cn('text-sm font-bold leading-5', item.excluded && 'line-through')}>{item.name}</div>{item.excluded && <span className="mt-1 inline-block rounded-full bg-[#eceeed] px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide">Not charged</span>}</td><td className="px-3 py-4 text-center text-sm font-semibold text-muted-foreground">{item.quantity}</td><td className="px-3 py-4 text-right text-sm font-extrabold tabular-nums">{money(item.price * item.quantity)}</td><td className="px-5 py-4"><PersonButtons item={item} people={people} onToggle={toggleAssignment} /></td></tr>)}</tbody>
+                <thead><tr className="border-b border-[#183b43]/10 bg-[#f8faf6] text-left text-[11px] font-extrabold uppercase tracking-[.1em] text-[#6a7f84]"><th className="px-5 py-3">Item · edit name</th><th className="px-3 py-3 text-center">Qty</th><th className="px-3 py-3 text-right">Line total · edit</th><th className="px-5 py-3">Split between</th></tr></thead>
+                <tbody>{items.map((item) => <tr key={item.id} className={cn('border-b border-[#183b43]/8 last:border-0', item.excluded && 'bg-[#fafafa] opacity-55')}>
+                  <td className="max-w-[390px] px-5 py-4"><EditableItemName key={`${item.id}:${item.name}`} item={item} onSave={editItemName} />{item.excluded && <span className="mt-1 inline-block rounded-full bg-[#eceeed] px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide">Not charged</span>}</td>
+                  <td className="px-3 py-4 text-center text-sm font-semibold text-muted-foreground">{item.quantity}</td>
+                  <td className="w-36 px-3 py-4 text-right"><EditableLinePrice key={`${item.id}:${Math.round(item.price * item.quantity * 100)}`} item={item} onSave={editItemLinePrice} /></td>
+                  <td className="px-5 py-4"><PersonButtons item={item} people={people} onToggle={toggleAssignment} /></td>
+                </tr>)}</tbody>
               </table></div>
-              <div className="divide-y divide-[#183b43]/10 md:hidden">{items.map((item) => <article key={item.id} className={cn('p-4', item.excluded && 'bg-[#fafafa] opacity-55')}><div className="flex items-start justify-between gap-3"><div><h3 className={cn('text-sm font-bold leading-5', item.excluded && 'line-through')}>{item.name}</h3><p className="mt-1 text-xs font-semibold text-muted-foreground">Qty {item.quantity}</p></div><span className="shrink-0 text-sm font-black tabular-nums">{money(item.price * item.quantity)}</span></div>{item.excluded ? <span className="mt-3 inline-block rounded-full bg-[#eceeed] px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide">Not charged</span> : <div className="mt-3"><p className="mb-2 text-[11px] font-extrabold uppercase tracking-[.08em] text-[#6a7f84]">Split between</p><PersonButtons item={item} people={people} onToggle={toggleAssignment} mobile /></div>}</article>)}</div>
+              <div className="divide-y divide-[#183b43]/10 md:hidden">{items.map((item) => <article key={item.id} className={cn('p-4', item.excluded && 'bg-[#fafafa] opacity-55')}>
+                <div className="flex items-start gap-3"><div className="min-w-0 flex-1"><EditableItemName key={`${item.id}:${item.name}`} item={item} onSave={editItemName} mobile /><p className="mt-1 text-xs font-semibold text-muted-foreground">Qty {item.quantity}</p></div><div className="w-28 shrink-0"><p className="mb-1 text-right text-[10px] font-extrabold uppercase tracking-wide text-muted-foreground">Line total</p><EditableLinePrice key={`${item.id}:${Math.round(item.price * item.quantity * 100)}`} item={item} onSave={editItemLinePrice} mobile /></div></div>
+                {item.excluded ? <span className="mt-3 inline-block rounded-full bg-[#eceeed] px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide">Not charged</span> : <div className="mt-3"><p className="mb-2 text-[11px] font-extrabold uppercase tracking-[.08em] text-[#6a7f84]">Split between</p><PersonButtons item={item} people={people} onToggle={toggleAssignment} mobile /></div>}
+              </article>)}</div>
             </>}
 
             <button className="flex min-h-14 w-full items-center justify-between border-t border-[#183b43]/10 bg-[#fffdfa] px-4 py-4 text-sm font-extrabold sm:px-5" onClick={() => setShowAdjustments((open) => !open)} aria-expanded={showAdjustments}><span className="flex items-center gap-2"><CircleDollarSign size={17} /> Tax, savings, refunds & extras</span><ChevronDown size={17} className={cn('transition', showAdjustments && 'rotate-180')} /></button>
@@ -477,6 +493,57 @@ export default function Home() {
       <footer className="mx-auto flex max-w-[1440px] flex-col gap-2 border-t border-[#183b43]/10 px-4 py-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-5 lg:px-8"><p>Receipt files stay on your device; parsed split details autosave through Supabase.</p><p>PDF + image receipts · Duplicate-aware</p></footer>
     </main>
   );
+}
+
+function EditableItemName({ item, onSave, mobile = false }: { item: ReceiptItem; onSave: (itemId: string, name: string) => void; mobile?: boolean }) {
+  const [draft, setDraft] = useState(item.name);
+  function commit(value: string) {
+    const name = value.replace(/\s+/g, ' ').trim();
+    if (!name) { setDraft(item.name); return; }
+    if (name !== item.name) onSave(item.id, name);
+    else setDraft(item.name);
+  }
+  return <Input
+    aria-label={`Product name: ${item.name}`}
+    title={item.name}
+    className={cn('h-10 border-transparent bg-transparent px-2 text-sm font-bold shadow-none hover:border-[#183b43]/15 hover:bg-white focus-visible:bg-white', mobile && 'h-11')}
+    value={draft}
+    onChange={(event) => setDraft(event.target.value)}
+    onBlur={(event) => commit(event.currentTarget.value)}
+    onKeyDown={(event) => {
+      if (event.key === 'Enter') event.currentTarget.blur();
+      if (event.key === 'Escape') { event.currentTarget.value = item.name; setDraft(item.name); event.currentTarget.blur(); }
+    }}
+  />;
+}
+
+function EditableLinePrice({ item, onSave, mobile = false }: { item: ReceiptItem; onSave: (itemId: string, lineTotal: number) => void; mobile?: boolean }) {
+  const lineTotal = (item.price * item.quantity).toFixed(2);
+  const [draft, setDraft] = useState(lineTotal);
+  function commit(value: string) {
+    const amount = Number(value.trim());
+    const cents = Math.round(amount * 100);
+    if (!value.trim() || !Number.isSafeInteger(cents) || cents < 0) { setDraft(lineTotal); return; }
+    const next = (cents / 100).toFixed(2);
+    setDraft(next);
+    if (next !== lineTotal) onSave(item.id, cents / 100);
+  }
+  return <div className="relative">
+    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-sm font-bold text-muted-foreground">$</span>
+    <Input
+      aria-label={`Line total for ${item.name}`}
+      className={cn('h-10 bg-white pl-6 text-right text-sm font-extrabold tabular-nums', mobile && 'h-11')}
+      inputMode="decimal"
+      type="text"
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={(event) => commit(event.currentTarget.value)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') event.currentTarget.blur();
+        if (event.key === 'Escape') { event.currentTarget.value = lineTotal; setDraft(lineTotal); event.currentTarget.blur(); }
+      }}
+    />
+  </div>;
 }
 
 function PersonButtons({ item, people, onToggle, mobile = false }: { item: ReceiptItem; people: Person[]; onToggle: (itemId: string, personId: string) => void; mobile?: boolean }) {

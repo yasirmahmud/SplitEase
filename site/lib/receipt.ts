@@ -7,6 +7,17 @@ export type ParsedReceiptItem = {
   excluded?: boolean;
 };
 
+export function updateReceiptLinePrice<T extends ParsedReceiptItem>(items: T[], itemId: string, lineTotal: number, receiptSubtotal?: number) {
+  const item = items.find((entry) => entry.id === itemId);
+  if (!item || item.quantity <= 0 || !Number.isFinite(lineTotal) || lineTotal < 0) return { items, receiptSubtotal };
+  const roundedTotal = Math.round(lineTotal * 100) / 100;
+  const difference = item.excluded ? 0 : roundedTotal - item.price * item.quantity;
+  return {
+    items: items.map((entry) => entry.id === itemId ? { ...entry, price: roundedTotal / entry.quantity } : entry),
+    receiptSubtotal: receiptSubtotal === undefined ? undefined : Math.round((receiptSubtotal + difference) * 100) / 100,
+  };
+}
+
 function slugId(value: string, index: number) {
   return `${value.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 25)}-${index}`;
 }

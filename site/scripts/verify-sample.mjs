@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { parseReceiptText, receiptFingerprint } from '../lib/receipt.ts';
+import { parseReceiptText, receiptFingerprint, updateReceiptLinePrice } from '../lib/receipt.ts';
 import { decodeSharedSplit, encodeSharedSplit } from '../lib/share-state.ts';
 
 const fixtures = [
@@ -54,6 +54,17 @@ for (const fixture of fixtures) {
 }
 
 const original = results[0];
+const chargedItem = original.parsed.items.find((item) => !item.excluded && item.quantity > 1);
+if (!chargedItem) throw new Error('Fixture needs a charged multi-quantity item for price editing');
+const editedLineTotal = Math.round(chargedItem.price * chargedItem.quantity * 100) / 100 + 1;
+const edited = updateReceiptLinePrice(original.parsed.items, chargedItem.id, editedLineTotal, original.parsed.subtotal);
+if (Math.abs((edited.receiptSubtotal ?? 0) - (original.parsed.subtotal ?? 0) - 1) > 0.001) throw new Error('Editing a line price did not update the receipt subtotal');
+if (Math.abs((edited.items.find((item) => item.id === chargedItem.id)?.price ?? 0) * chargedItem.quantity - editedLineTotal) > 0.001) throw new Error('Edited line price was not saved per unit');
+const refundReceipt = results.find((result) => result.fixture.refund);
+const excludedItem = refundReceipt?.parsed.items.find((item) => item.excluded);
+if (!refundReceipt || !excludedItem) throw new Error('Fixture needs an excluded item for price editing');
+const editedExcluded = updateReceiptLinePrice(refundReceipt.parsed.items, excludedItem.id, excludedItem.price * excludedItem.quantity + 1, refundReceipt.parsed.subtotal);
+if (editedExcluded.receiptSubtotal !== refundReceipt.parsed.subtotal) throw new Error('Editing an excluded item changed the charged subtotal');
 const firstFingerprint = receiptFingerprint(original.parsed);
 const secondFingerprint = receiptFingerprint(parseReceiptText(original.text));
 if (firstFingerprint !== secondFingerprint) throw new Error('The same receipt did not produce the same duplicate-detection fingerprint');
