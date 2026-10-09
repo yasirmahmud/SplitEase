@@ -8,6 +8,7 @@ const fixtures = [
   { file: 't1.pdf', items: 9, subtotal: 11.74, tax: 0.53, total: 12.27, excluded: 0 },
   { file: 't2.pdf', items: 20, subtotal: 87.22, tax: 0.45, total: 85.46, excluded: 1 },
   { file: 't3.pdf', items: 6, subtotal: 12.78, tax: 0, total: 12.78, excluded: 0 },
+  { file: 'new_test_with_refund.pdf', items: 20, subtotal: 129.09, tax: 4.78, refund: 10.47, total: 123.33, excluded: 2 },
 ];
 
 async function parsePdf(file) {
@@ -34,15 +35,17 @@ for (const fixture of fixtures) {
   const { parsed, text } = await parsePdf(fixture.file);
   const itemSubtotal = parsed.items.filter((item) => !item.excluded).reduce((sum, item) => sum + item.price * item.quantity, 0);
   const receiptSubtotal = parsed.subtotal ?? itemSubtotal;
-  const total = receiptSubtotal - parsed.adjustments.savings + parsed.adjustments.tax + parsed.adjustments.tip + parsed.adjustments.delivery;
+  const total = receiptSubtotal - parsed.adjustments.savings + parsed.adjustments.tax + parsed.adjustments.tip + parsed.adjustments.delivery - parsed.adjustments.refund;
   const excluded = parsed.items.filter((item) => item.excluded).length;
 
   if (parsed.items.length !== fixture.items) throw new Error(`${fixture.file}: expected ${fixture.items} items, found ${parsed.items.length}`);
   if (Math.abs(receiptSubtotal - fixture.subtotal) > 0.001) throw new Error(`${fixture.file}: expected $${fixture.subtotal.toFixed(2)} subtotal, found $${receiptSubtotal.toFixed(2)}`);
   if (Math.abs(parsed.adjustments.tax - fixture.tax) > 0.001) throw new Error(`${fixture.file}: expected $${fixture.tax.toFixed(2)} tax, found $${parsed.adjustments.tax.toFixed(2)}`);
+  if (Math.abs(parsed.adjustments.refund - (fixture.refund ?? 0)) > 0.001) throw new Error(`${fixture.file}: expected $${(fixture.refund ?? 0).toFixed(2)} refund, found $${parsed.adjustments.refund.toFixed(2)}`);
   if (Math.abs(total - fixture.total) > 0.001) throw new Error(`${fixture.file}: expected $${fixture.total.toFixed(2)} total, found $${total.toFixed(2)}`);
   if (Math.abs((parsed.total ?? 0) - fixture.total) > 0.001) throw new Error(`${fixture.file}: expected printed total $${fixture.total.toFixed(2)}, found $${parsed.total?.toFixed(2)}`);
   if (excluded !== fixture.excluded) throw new Error(`${fixture.file}: expected ${fixture.excluded} excluded items, found ${excluded}`);
+  if (fixture.refund && !parsed.items.some((item) => item.excluded && /Mainstays.*Roasting Pan/i.test(item.name))) throw new Error(`${fixture.file}: returned item was not excluded`);
   if (parsed.items.some((item) => /(?:shopped|substituted|weight adjusted|cancel(?:l)?ed)$/i.test(item.name))) {
     throw new Error(`${fixture.file}: an item name retained shopping status text`);
   }
@@ -56,6 +59,8 @@ const secondFingerprint = receiptFingerprint(parseReceiptText(original.text));
 if (firstFingerprint !== secondFingerprint) throw new Error('The same receipt did not produce the same duplicate-detection fingerprint');
 const changedFingerprint = receiptFingerprint({ ...original.parsed, adjustments: { ...original.parsed.adjustments, tax: original.parsed.adjustments.tax + 0.01 } });
 if (firstFingerprint === changedFingerprint) throw new Error('A changed receipt produced the same duplicate-detection fingerprint');
+const refundedFingerprint = receiptFingerprint({ ...original.parsed, adjustments: { ...original.parsed.adjustments, refund: 1 } });
+if (firstFingerprint === refundedFingerprint) throw new Error('A refund produced the same duplicate-detection fingerprint');
 
 const shared = {
   version: 1,

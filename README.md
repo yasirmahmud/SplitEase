@@ -4,6 +4,12 @@ SplitEase is a receipt splitter for PDF and image receipts. Receipt parsing and 
 
 Supabase's free tier is sufficient for this app's small JSON records and autosave traffic. The included schema uses the existing single shared workspace row, so no schema migration is required when upgrading from the original one-session version.
 
+## Cloud sync setup
+
+In the Supabase project dashboard, open **SQL Editor** and run [`site/supabase/schema.sql`](site/supabase/schema.sql). This creates the `splitease_state` row that autosave requires. A missing table causes SplitEase to keep edits on the device and retry cloud sync.
+
+If using a different Supabase project, set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` when building the site. The configured publishable key must belong to the same project URL.
+
 ## Local development
 
 ```bash

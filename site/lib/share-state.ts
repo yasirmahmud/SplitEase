@@ -1,7 +1,7 @@
 import type { ParsedReceiptItem } from './receipt';
 
 export type SharedPerson = { id: string; name: string; color: string };
-export type SharedAdjustments = { savings: number; tax: number; tip: number; delivery: number };
+export type SharedAdjustments = { savings: number; tax: number; tip: number; delivery: number; refund?: number };
 export type SharedSplit = {
   version: 1;
   receiptName: string;
@@ -32,6 +32,7 @@ export function isSharedSplit(value: unknown): value is SharedSplit {
   if (parsed.version !== 1 || typeof parsed.receiptName !== 'string') return false;
   if (!Array.isArray(parsed.people) || !Array.isArray(parsed.items)) return false;
   if (!parsed.adjustments || ['savings', 'tax', 'tip', 'delivery'].some((key) => typeof parsed.adjustments?.[key as keyof SharedAdjustments] !== 'number')) return false;
+  if (parsed.adjustments.refund !== undefined && typeof parsed.adjustments.refund !== 'number') return false;
   if (parsed.people.some((person) => typeof person?.id !== 'string' || typeof person?.name !== 'string' || typeof person?.color !== 'string')) return false;
   if (parsed.items.some((item) => typeof item?.id !== 'string' || typeof item?.name !== 'string' || typeof item?.price !== 'number' || typeof item?.quantity !== 'number' || !Array.isArray(item?.assignedTo))) return false;
   return true;

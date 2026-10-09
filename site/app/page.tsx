@@ -30,7 +30,7 @@ import { supabase } from '@/lib/supabase';
 
 type Person = { id: string; name: string; color: string };
 type ReceiptItem = { id: string; name: string; quantity: number; price: number; assignedTo: string[]; excluded?: boolean };
-type Adjustments = { savings: number; tax: number; tip: number; delivery: number };
+type Adjustments = { savings: number; tax: number; tip: number; delivery: number; refund?: number };
 type SplitSession = {
   id: string;
   title: string;
@@ -65,12 +65,23 @@ const demoItems: ReceiptItem[] = [
 ];
 const demoAdjustments: Adjustments = { savings: 1.98, tax: 2.49, tip: 0, delivery: 0 };
 const localCacheKey = 'splitease-workspace-v2';
+const syncedCacheKey = 'splitease-synced-workspace-v2';
 
 function now() { return new Date().toISOString(); }
 function newId() { return `split-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
 function money(value: number) { return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value || 0); }
 function slugId(value: string, index: number) { return `${value.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 25)}-${index}`; }
 function shortDate(value: string) { return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(new Date(value)); }
+function snapshotSignature(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
+  return `${value.length}:${(hash >>> 0).toString(16)}`;
+}
+function syncFailureMessage(message: string) {
+  if (message.includes("Could not find the table 'public.splitease_state'")) return 'Cloud database setup is incomplete: the saved splits table is missing';
+  if (/fetch failed|failed to fetch|networkerror/i.test(message)) return 'Cannot reach the cloud database';
+  return message;
+}
 
 function fingerprintForSession(session: SplitSession) {
   if (session.fingerprint) return session.fingerprint;
@@ -129,8 +140,12 @@ export default function Home() {
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const currentVersionRef = useRef(1);
+  const currentVersionRef = useRef<number | null>(null);
   const lastSavedSnapshotRef = useRef('');
+  const pendingWorkspaceRef = useRef<{ workspace: SavedWorkspace; snapshot: string } | null>(null);
+  const savingRef = useRef(false);
+  const retryTimerRef = useRef<number | null>(null);
+  const retryDelayRef = useRef(1000);
 
   const activeSession = useMemo(() => sessions.find((session) => session.id === activeSessionId) ?? sessions[0], [sessions, activeSessionId]);
   const displayedSessions = useMemo(() => [...sessions].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()), [sessions]);
@@ -154,10 +169,15 @@ export default function Home() {
     let cancelled = false;
     async function loadWorkspace() {
       let cached: SavedWorkspace | null = null;
+      let cachedHasPendingChanges = false;
       try {
         const value = localStorage.getItem(localCacheKey);
         const parsed: unknown = value ? JSON.parse(value) : null;
-        if (isSavedWorkspace(parsed)) cached = parsed;
+        if (isSavedWorkspace(parsed)) {
+          cached = parsed;
+          const lastSynced = localStorage.getItem(syncedCacheKey);
+          cachedHasPendingChanges = lastSynced !== null && snapshotSignature(value!) !== lastSynced;
+        }
       } catch { /* An invalid cache should not block Supabase. */ }
 
       if (cached && !cancelled) {
@@ -169,25 +189,82 @@ export default function Home() {
       if (cancelled) return;
       if (error) {
         setSyncState('offline');
-        setStatus(cached ? 'Saved sessions restored from this device' : 'Working locally — cloud sync is unavailable');
+        setStatus(`Cloud sync unavailable: ${syncFailureMessage(error.message)}. Retrying automatically.`);
         setHydrated(true);
         return;
       }
 
       currentVersionRef.current = Number(data.version) || 1;
-      const workspace = isSavedWorkspace(data.data) ? data.data : isSharedSplit(data.data) ? migrateSharedSplit(data.data) : cached;
+      const remote = isSavedWorkspace(data.data) ? data.data : isSharedSplit(data.data) ? migrateSharedSplit(data.data) : null;
+      const cachedIsNewer = cached?.sessions.some((session) => new Date(session.updatedAt).getTime() > new Date(data.updated_at).getTime()) ?? false;
+      const workspace = cached && (cachedHasPendingChanges || cachedIsNewer || !remote) ? cached : remote;
+      lastSavedSnapshotRef.current = remote ? JSON.stringify(remote) : '';
+      const needsSync = workspace ? JSON.stringify(workspace) !== lastSavedSnapshotRef.current : false;
       if (workspace) {
         setSessions(workspace.sessions);
         setActiveSessionId(workspace.sessions.some((session) => session.id === workspace.activeSessionId) ? workspace.activeSessionId : workspace.sessions[0].id);
-        lastSavedSnapshotRef.current = JSON.stringify(workspace);
-        setStatus(`${workspace.sessions.length} saved ${workspace.sessions.length === 1 ? 'split' : 'splits'} restored`);
+        setStatus(needsSync ? 'Local changes restored; syncing to cloud' : `${workspace.sessions.length} saved ${workspace.sessions.length === 1 ? 'split' : 'splits'} restored`);
       }
+      if (!needsSync && remote) localStorage.setItem(syncedCacheKey, snapshotSignature(lastSavedSnapshotRef.current));
       setLastSavedAt(data.updated_at);
-      setSyncState('saved');
+      setSyncState(needsSync ? 'saving' : 'saved');
       setHydrated(true);
     }
     void loadWorkspace();
     return () => { cancelled = true; };
+  }, []);
+
+  const savePendingWorkspace = useCallback(() => {
+    const runSave = async () => {
+      if (savingRef.current) return;
+      const pending = pendingWorkspaceRef.current;
+      if (!pending || pending.snapshot === lastSavedSnapshotRef.current) return;
+      savingRef.current = true;
+      setSyncState('saving');
+      try {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          if (currentVersionRef.current === null) {
+            const latest = await supabase.from('splitease_state').select('version').eq('id', 'current').single();
+            if (latest.error || !latest.data) throw new Error(latest.error?.message || 'Cloud state is unavailable');
+            currentVersionRef.current = Number(latest.data.version);
+          }
+          const version = currentVersionRef.current;
+          const result = await supabase.from('splitease_state')
+            .update({ version: version + 1, data: pending.workspace, updated_at: now() })
+            .eq('id', 'current')
+            .eq('version', version)
+            .select('version,updated_at')
+            .maybeSingle();
+          if (result.error) throw new Error(result.error.message);
+          if (!result.data) {
+            currentVersionRef.current = null;
+            continue;
+          }
+          currentVersionRef.current = Number(result.data.version);
+          lastSavedSnapshotRef.current = pending.snapshot;
+          localStorage.setItem(syncedCacheKey, snapshotSignature(pending.snapshot));
+          setLastSavedAt(result.data.updated_at);
+          retryDelayRef.current = 1000;
+          setSyncState('saved');
+          setStatus((current) => current.startsWith('Saved on this device; cloud sync retrying') || current.startsWith('Cloud sync unavailable') ? 'Changes synced to cloud' : current);
+          if (pendingWorkspaceRef.current?.snapshot !== pending.snapshot) {
+            // oxlint-disable-next-line react/react-compiler -- the stable save loop reads the latest pending workspace from refs.
+            retryTimerRef.current = window.setTimeout(() => void runSave(), 0);
+          }
+          return;
+        }
+        throw new Error('Cloud state changed during the save');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown connection error';
+        setSyncState('offline');
+        setStatus(`Saved on this device; cloud sync retrying (${syncFailureMessage(message)})`);
+        retryTimerRef.current = window.setTimeout(() => void runSave(), retryDelayRef.current);
+        retryDelayRef.current = Math.min(retryDelayRef.current * 2, 30000);
+      } finally {
+        savingRef.current = false;
+      }
+    };
+    void runSave();
   }, []);
 
   useEffect(() => {
@@ -195,35 +272,17 @@ export default function Home() {
     const workspace: SavedWorkspace = { version: 2, activeSessionId, sessions };
     const snapshot = JSON.stringify(workspace);
     localStorage.setItem(localCacheKey, snapshot);
+    pendingWorkspaceRef.current = { workspace, snapshot };
+    if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
     if (snapshot === lastSavedSnapshotRef.current) return;
-    setSyncState('saving');
-
-    const timer = window.setTimeout(async () => {
-      const nextVersion = currentVersionRef.current + 1;
-      const { data, error } = await supabase.from('splitease_state')
-        .update({ version: nextVersion, data: workspace, updated_at: now() })
-        .eq('id', 'current')
-        .eq('version', currentVersionRef.current)
-        .select('version,updated_at')
-        .maybeSingle();
-
-      if (error || !data) {
-        setSyncState('offline');
-        setStatus('Saved on this device; cloud sync will retry after your next edit');
-        return;
-      }
-      currentVersionRef.current = Number(data.version);
-      lastSavedSnapshotRef.current = snapshot;
-      setLastSavedAt(data.updated_at);
-      setSyncState('saved');
-    }, 700);
-    return () => window.clearTimeout(timer);
-  }, [sessions, activeSessionId, hydrated]);
+    retryTimerRef.current = window.setTimeout(() => savePendingWorkspace(), 700);
+    return () => { if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current); };
+  }, [sessions, activeSessionId, hydrated, savePendingWorkspace]);
 
   const chargedItems = useMemo(() => items.filter((item) => !item.excluded), [items]);
   const itemSubtotal = useMemo(() => chargedItems.reduce((sum, item) => sum + item.price * item.quantity, 0), [chargedItems]);
   const subtotal = activeSession.receiptSubtotal ?? itemSubtotal;
-  const grandTotal = subtotal - adjustments.savings + adjustments.tax + adjustments.tip + adjustments.delivery;
+  const grandTotal = subtotal - adjustments.savings + adjustments.tax + adjustments.tip + adjustments.delivery - (adjustments.refund ?? 0);
   const assignedSubtotal = chargedItems.reduce((sum, item) => item.assignedTo.length ? sum + item.price * item.quantity : sum, 0);
   const unassignedCount = chargedItems.filter((item) => item.assignedTo.length === 0).length;
   const totals = useMemo(() => {
@@ -311,7 +370,7 @@ export default function Home() {
 
   function addBlankSession() {
     const timestamp = now();
-    const session: SplitSession = { id: newId(), title: 'New split', receiptName: 'Upload a receipt to begin', createdAt: timestamp, updatedAt: timestamp, people: people.map((person) => ({ ...person })), items: [], adjustments: { savings: 0, tax: 0, tip: 0, delivery: 0 }, reviewedBy: [] };
+    const session: SplitSession = { id: newId(), title: 'New split', receiptName: 'Upload a receipt to begin', createdAt: timestamp, updatedAt: timestamp, people: people.map((person) => ({ ...person })), items: [], adjustments: { savings: 0, tax: 0, tip: 0, delivery: 0, refund: 0 }, reviewedBy: [] };
     setSessions((current) => [session, ...current]);
     setActiveSessionId(session.id);
     setStatus('New split ready');
@@ -405,13 +464,13 @@ export default function Home() {
               <div className="divide-y divide-[#183b43]/10 md:hidden">{items.map((item) => <article key={item.id} className={cn('p-4', item.excluded && 'bg-[#fafafa] opacity-55')}><div className="flex items-start justify-between gap-3"><div><h3 className={cn('text-sm font-bold leading-5', item.excluded && 'line-through')}>{item.name}</h3><p className="mt-1 text-xs font-semibold text-muted-foreground">Qty {item.quantity}</p></div><span className="shrink-0 text-sm font-black tabular-nums">{money(item.price * item.quantity)}</span></div>{item.excluded ? <span className="mt-3 inline-block rounded-full bg-[#eceeed] px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide">Not charged</span> : <div className="mt-3"><p className="mb-2 text-[11px] font-extrabold uppercase tracking-[.08em] text-[#6a7f84]">Split between</p><PersonButtons item={item} people={people} onToggle={toggleAssignment} mobile /></div>}</article>)}</div>
             </>}
 
-            <button className="flex min-h-14 w-full items-center justify-between border-t border-[#183b43]/10 bg-[#fffdfa] px-4 py-4 text-sm font-extrabold sm:px-5" onClick={() => setShowAdjustments((open) => !open)} aria-expanded={showAdjustments}><span className="flex items-center gap-2"><CircleDollarSign size={17} /> Tax, savings & extras</span><ChevronDown size={17} className={cn('transition', showAdjustments && 'rotate-180')} /></button>
-            {showAdjustments && <div className="grid grid-cols-2 gap-3 border-t border-[#183b43]/10 bg-[#f8faf6] p-4 sm:grid-cols-4 sm:p-5">{(['savings', 'tax', 'delivery', 'tip'] as const).map((key) => <label key={key} className="text-xs font-extrabold capitalize text-[#597177]">{key}<div className="relative mt-1"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span><Input className="h-11 bg-white pl-7" min="0" step="0.01" inputMode="decimal" type="number" value={adjustments[key]} onChange={(event) => updateActive((session) => ({ ...session, adjustments: { ...session.adjustments, [key]: Number(event.target.value) } }))} /></div></label>)}</div>}
+            <button className="flex min-h-14 w-full items-center justify-between border-t border-[#183b43]/10 bg-[#fffdfa] px-4 py-4 text-sm font-extrabold sm:px-5" onClick={() => setShowAdjustments((open) => !open)} aria-expanded={showAdjustments}><span className="flex items-center gap-2"><CircleDollarSign size={17} /> Tax, savings, refunds & extras</span><ChevronDown size={17} className={cn('transition', showAdjustments && 'rotate-180')} /></button>
+            {showAdjustments && <div className="grid grid-cols-2 gap-3 border-t border-[#183b43]/10 bg-[#f8faf6] p-4 sm:grid-cols-5 sm:p-5">{(['savings', 'tax', 'delivery', 'tip', 'refund'] as const).map((key) => <label key={key} className="text-xs font-extrabold capitalize text-[#597177]">{key}<div className="relative mt-1"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span><Input className="h-11 bg-white pl-7" min="0" step="0.01" inputMode="decimal" type="number" value={adjustments[key] ?? 0} onChange={(event) => updateActive((session) => ({ ...session, adjustments: { ...session.adjustments, [key]: Number(event.target.value) } }))} /></div></label>)}</div>}
           </section>
 
           <aside className="order-1 h-fit overflow-hidden rounded-[22px] bg-primary text-primary-foreground shadow-[0_18px_60px_rgba(23,57,65,.2)] xl:sticky xl:top-5 xl:order-2">
             <div className="p-4 sm:p-5"><div className="mb-4 flex items-start justify-between"><div><p className="text-xs font-extrabold uppercase tracking-[.13em] text-[#a9c2c6]">Everyone owes</p><h2 className="mt-1 text-3xl font-black tracking-[-.04em]">{money(grandTotal)}</h2></div><span className="grid size-10 place-items-center rounded-xl bg-white/10"><ReceiptText size={19} /></span></div><div className="mb-4 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-[#dff3a8] transition-all" style={{ width: `${itemSubtotal ? Math.min(100, assignedSubtotal / itemSubtotal * 100) : 0}%` }} /></div><div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">{totals.map((person) => { const reviewed = activeSession.reviewedBy.includes(person.id); return <button key={person.id} type="button" aria-label={`${reviewed ? 'Mark' : 'Mark'} ${person.name} as ${reviewed ? 'not reviewed' : 'reviewed'}`} onClick={() => toggleReviewed(person.id)} className="flex min-h-12 items-center justify-between rounded-xl bg-white/[.07] px-3 py-2.5 text-left"><span className="flex items-center gap-2.5"><span className="size-2.5 rounded-full" style={{ background: person.color }} /><span className="font-bold">{person.name}</span></span><span className="flex items-center gap-2"><span className="text-lg font-black tabular-nums">{money(person.total)}</span><span className={cn('grid size-7 place-items-center rounded-full border', reviewed ? 'border-[#dff3a8] bg-[#dff3a8] text-[#183b43]' : 'border-white/20 text-[#91acb1]')}><Check size={15} /></span></span></button>; })}</div>{unassignedCount > 0 && <div className="mt-4 rounded-xl border border-[#f8d585]/25 bg-[#f8d585]/10 px-3 py-2.5 text-xs font-bold text-[#fbe2a5]">{unassignedCount} charged {unassignedCount === 1 ? 'item is' : 'items are'} still unassigned.</div>}</div>
-            <div className="border-t border-white/10 bg-black/10 p-4 sm:p-5"><div className="mb-4 space-y-2 text-xs text-[#bfd0d3]"><div className="flex justify-between"><span>Items</span><span>{money(subtotal)}</span></div><div className="flex justify-between"><span>Savings</span><span>−{money(adjustments.savings)}</span></div><div className="flex justify-between"><span>Tax + extras</span><span>{money(adjustments.tax + adjustments.tip + adjustments.delivery)}</span></div></div><Button onClick={copySummary} className="h-12 w-full rounded-xl bg-[#dff3a8] font-extrabold text-[#183b43] hover:bg-[#cfee87]">{copied ? <><Check /> Copied!</> : <><Copy /> Copy split summary</>}</Button></div>
+            <div className="border-t border-white/10 bg-black/10 p-4 sm:p-5"><div className="mb-4 space-y-2 text-xs text-[#bfd0d3]"><div className="flex justify-between"><span>Items</span><span>{money(subtotal)}</span></div><div className="flex justify-between"><span>Savings</span><span>−{money(adjustments.savings)}</span></div><div className="flex justify-between"><span>Tax + extras</span><span>{money(adjustments.tax + adjustments.tip + adjustments.delivery)}</span></div>{(adjustments.refund ?? 0) > 0 && <div className="flex justify-between"><span>Refund</span><span>−{money(adjustments.refund ?? 0)}</span></div>}</div><Button onClick={copySummary} className="h-12 w-full rounded-xl bg-[#dff3a8] font-extrabold text-[#183b43] hover:bg-[#cfee87]">{copied ? <><Check /> Copied!</> : <><Copy /> Copy split summary</>}</Button></div>
           </aside>
         </div>
       </section>

@@ -46,7 +46,7 @@ export function parseReceiptText(raw: string) {
     if (name.length > 2 && !isStatusOnly) {
       const quantity = Number(match[2]);
       const lineTotal = Number(match[3].replace(',', '.'));
-      items.push({ id: slugId(name, items.length), name, quantity, price: lineTotal / quantity, assignedTo: [], excluded: /Unavailable|Cancel(?:l)?ed/i.test(joined) });
+      items.push({ id: slugId(name, items.length), name, quantity, price: lineTotal / quantity, assignedTo: [], excluded: /Unavailable|Cancel(?:l)?ed|Return complete/i.test(joined) });
     }
     buffer = [];
   }
@@ -57,6 +57,8 @@ export function parseReceiptText(raw: string) {
   };
   const value = (pattern: RegExp) => matchedValue(pattern) ?? 0;
   const deliveryMatch = text.match(/(?:delivery|shipping)[^\n$]*\$(\d+[.,]\d{2})(?:\s+\$?(\d+[.,]?\d{0,2}))?/i);
+  const refund = [...text.matchAll(/(?:^|\n)\s*Refund\s+-?\$(\d+[.,]\d{2})/gim)]
+    .reduce((sum, match) => sum + Number(match[1].replace(',', '.')), 0);
   return {
     items,
     adjustments: {
@@ -64,6 +66,7 @@ export function parseReceiptText(raw: string) {
       tax: value(/Taxes?\s+\$(\d+[.,]\d{2})/i),
       tip: value(/(?:Driver\s+)?tip\s+\$(\d+[.,]\d{2})/i),
       delivery: Number((deliveryMatch?.[2] || deliveryMatch?.[1] || '0').replace(',', '.')),
+      refund,
     },
     merchant: /Walmart/i.test(text) ? 'Walmart' : 'Imported receipt',
     date: text.match(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s+\d{4}/i)?.[0],
@@ -72,7 +75,9 @@ export function parseReceiptText(raw: string) {
   };
 }
 
-export function receiptFingerprint(receipt: Pick<ReturnType<typeof parseReceiptText>, 'merchant' | 'date' | 'items' | 'adjustments'>) {
+export function receiptFingerprint(receipt: Pick<ReturnType<typeof parseReceiptText>, 'merchant' | 'date' | 'items'> & {
+  adjustments: Omit<ReturnType<typeof parseReceiptText>['adjustments'], 'refund'> & { refund?: number };
+}) {
   const canonical = [
     receipt.merchant.toLowerCase().replace(/[^a-z0-9]/g, ''),
     receipt.date?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'no-date',
@@ -82,7 +87,8 @@ export function receiptFingerprint(receipt: Pick<ReturnType<typeof parseReceiptT
       Math.round(item.price * 100),
       item.excluded ? 1 : 0,
     ].join(':')),
-    ...Object.values(receipt.adjustments).map((value) => Math.round(value * 100)),
+    ...(['savings', 'tax', 'tip', 'delivery'] as const).map((key) => Math.round(receipt.adjustments[key] * 100)),
+    ...(receipt.adjustments.refund ? [`refund:${Math.round(receipt.adjustments.refund * 100)}`] : []),
   ].join('|');
 
   // This only flags likely duplicates; it is not used as a security boundary.
