@@ -3,9 +3,15 @@ import { validateReceiptImport } from './receipt-import-schema.ts';
 
 const encoder = new TextEncoder();
 const maxBodyBytes = 256 * 1024;
+const publicIntegrationId = '00000000-0000-4000-8000-000000000001';
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'content-type, idempotency-key',
+};
 
 function json(value: unknown, status: number) {
-  return Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
+  return Response.json(value, { status, headers: { 'Cache-Control': 'no-store', ...corsHeaders } });
 }
 
 function error(status: number, code: string, message: string, path?: string) {
@@ -42,9 +48,8 @@ async function limitedBody(request: Request): Promise<string | null> {
 }
 
 Deno.serve(async (request) => {
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders });
   if (request.method !== 'POST') return error(405, 'METHOD_NOT_ALLOWED', 'Use POST');
-  const token = /^Bearer (\S+)$/i.exec(request.headers.get('authorization') || '')?.[1];
-  if (!token) return error(401, 'UNAUTHORIZED', 'A valid integration token is required');
   const idempotencyKey = request.headers.get('idempotency-key') || '';
   if (!/^[A-Za-z0-9._:-]{8,128}$/.test(idempotencyKey)) return error(400, 'INVALID_IDEMPOTENCY_KEY', 'Idempotency-Key must be 8 to 128 safe characters');
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) return error(415, 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json');
@@ -62,17 +67,13 @@ Deno.serve(async (request) => {
   const serviceKey = secretKeys.default || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
   if (!url || !serviceKey) return error(503, 'SERVICE_UNAVAILABLE', 'Import service is not configured');
   const db = createClient(url, serviceKey, { auth: { persistSession: false } });
-  const tokenHash = await sha256(token);
-  const integration = await db.from('receipt_import_integrations').select('id').eq('token_hash', tokenHash).eq('active', true).maybeSingle();
-  if (integration.error) return error(503, 'SERVICE_UNAVAILABLE', 'Import service is unavailable');
-  if (!integration.data) return error(401, 'UNAUTHORIZED', 'A valid integration token is required');
-  const allowance = await db.rpc('allow_receipt_import', { integration: integration.data.id });
+  const allowance = await db.rpc('allow_receipt_import', { integration: publicIntegrationId });
   if (allowance.error) return error(503, 'SERVICE_UNAVAILABLE', 'Import service is unavailable');
-  if (!allowance.data) return error(429, 'RATE_LIMITED', 'Try again after this minute');
+  if (!allowance.data) return error(429, 'RATE_LIMITED', 'Public receipt limit reached; try again after this minute');
 
   const payloadHash = await sha256(canonical(result.receipt));
   const inserted = await db.from('receipt_submissions').insert({
-    integration_id: integration.data.id,
+    integration_id: publicIntegrationId,
     external_receipt_id: result.receipt.external_receipt_id,
     idempotency_key: idempotencyKey,
     payload_hash: payloadHash,
@@ -82,7 +83,7 @@ Deno.serve(async (request) => {
   if (inserted.error?.code !== '23505') return error(503, 'SERVICE_UNAVAILABLE', 'Could not store receipt');
 
   const existing = await db.from('receipt_submissions').select('id,status,idempotency_key,payload_hash')
-    .eq('integration_id', integration.data.id).eq('external_receipt_id', result.receipt.external_receipt_id).maybeSingle();
+    .eq('integration_id', publicIntegrationId).eq('external_receipt_id', result.receipt.external_receipt_id).maybeSingle();
   if (existing.error) return error(503, 'SERVICE_UNAVAILABLE', 'Could not check existing receipt');
   if (existing.data?.idempotency_key === idempotencyKey && existing.data.payload_hash === payloadHash) {
     return json({ import_id: existing.data.id, status: existing.data.status, duplicate: true }, 200);

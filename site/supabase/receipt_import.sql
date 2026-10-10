@@ -136,7 +136,3 @@ revoke all on function public.accept_receipt_import(uuid) from public;
 revoke all on function public.reject_receipt_import(uuid) from public;
 grant execute on function public.accept_receipt_import(uuid) to anon, authenticated;
 grant execute on function public.reject_receipt_import(uuid) to anon, authenticated;
-
--- Example token provisioning (run only in SQL Editor, replacing the name and token):
--- insert into public.receipt_import_integrations (name, token_hash)
--- values ('My processor', encode(digest('replace-with-a-long-random-token', 'sha256'), 'hex'));

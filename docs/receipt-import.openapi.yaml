@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: SplitEase receipt import API
-  version: 1.0.0-proposal
-  description: Submit normalized receipts for review in the SplitEase shared workspace. This endpoint is proposed and is not deployed.
+  version: 1.0.0
+  description: Publicly submit normalized receipts for review in the SplitEase shared workspace. No authentication is required.
 servers:
   - url: https://pooobzllagsownfpmrpf.supabase.co/functions/v1
 paths:
@@ -10,14 +10,12 @@ paths:
     post:
       operationId: submitReceipt
       summary: Submit one normalized receipt
-      description: An integration processes the source receipt and submits JSON. A successful submission enters the pending inbox; it does not modify a split until accepted.
-      security:
-        - integrationToken: []
+      description: A caller processes the source receipt and submits JSON without authentication. A successful submission enters the pending inbox; it does not modify a split until accepted. All callers share a 60 requests per minute limit.
       parameters:
         - name: Idempotency-Key
           in: header
           required: true
-          description: Stable, unique key for this submission within one integration. Reuse it only when retrying the identical body.
+          description: Stable, unique key for this submission. Reuse it only when retrying the identical body. All public callers share a receipt-ID namespace.
           schema:
             type: string
             minLength: 8
@@ -79,8 +77,6 @@ paths:
           $ref: '#/components/responses/Error'
         '405':
           $ref: '#/components/responses/Error'
-        '401':
-          $ref: '#/components/responses/Error'
         '409':
           $ref: '#/components/responses/Error'
         '413':
@@ -94,11 +90,6 @@ paths:
         '503':
           $ref: '#/components/responses/Error'
 components:
-  securitySchemes:
-    integrationToken:
-      type: http
-      scheme: bearer
-      bearerFormat: opaque integration token
   schemas:
     Receipt:
       type: object
@@ -126,7 +117,7 @@ components:
           type: string
           minLength: 1
           maxLength: 128
-          description: Stable ID supplied by the integration. Unique within that integration.
+          description: Stable ID supplied by the caller. Unique across public submissions.
         receipt_type:
           type: string
           enum: [grocery, grocery_delivery, restaurant, retail, other]
